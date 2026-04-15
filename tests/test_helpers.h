@@ -92,6 +92,12 @@ static TH_UNUSED int th_write_text_file(const char *path, const char *contents) 
     return 1;
 }
 
+static TH_UNUSED int th_file_exists(const char *path) {
+    struct stat st;
+
+    return path != NULL && stat(path, &st) == 0;
+}
+
 static TH_UNUSED char *th_read_text_file(const char *path) {
     FILE *file;
     long size;

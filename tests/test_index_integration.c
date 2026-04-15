@@ -161,17 +161,17 @@ static int test_lazy_build_and_read(void) {
     return ok;
 }
 
-/* execute_select 의 인덱스 경로 vs 선형 경로가 동일한 결과를 주는지. */
+/* 실제 PK 인덱스 조회 결과가 선형 스캔과 동일한 행을 가리키는지 검증한다. */
 static int test_index_select_matches_linear(void) {
     char workspace[PATH_MAX];
     Schema *schema = NULL;
     ColumnList star;
-    WhereClause where_idx;
     WhereClause where_lin;
-    ResultSet *r_idx = NULL;
     ResultSet *r_lin = NULL;
+    Row idx_row;
     int ok = 1;
     int i;
+    int64_t offset = -1;
 
     index_drop_all();
     if (!setup_members_workspace(workspace, sizeof(workspace))) {
@@ -192,19 +192,16 @@ static int test_index_select_matches_linear(void) {
         memset(&star, 0, sizeof(star));
         star.is_star = 1;
 
-        /* 인덱스 경로 시뮬레이션: btree_find + read_row_at */
-        {
-            BTree *tree = index_get_or_build("members", schema);
-            int64_t off;
-            Row row;
-            if (btree_find(tree, 25, &off) != 1) ok = th_fail("btree_find 25");
-            if (ok && storage_read_row_at("members", schema, off, &row) != 1) {
-                ok = th_fail("read_row_at 25");
-            }
-            if (ok && strcmp(row.data[1], "m25") != 0) ok = th_fail("idx name");
+        if (index_lookup_offset("members", schema, 25, &offset) != 1) {
+            ok = th_fail("index lookup 25");
+        }
+        if (ok && !storage_read_row_at("members", schema, offset, &idx_row)) {
+            ok = th_fail("index read_row_at 25");
+        }
+        if (ok && strcmp(idx_row.data[1], "m25") != 0) {
+            ok = th_fail("indexed row mismatch");
         }
 
-        /* 선형 경로: storage_select with WHERE name = 'm25' */
         memset(&where_lin, 0, sizeof(where_lin));
         where_lin.condition_count = 1;
         strncpy(where_lin.conditions[0].column_name, "name",
@@ -215,27 +212,14 @@ static int test_index_select_matches_linear(void) {
                 sizeof(where_lin.conditions[0].value) - 1);
         r_lin = storage_select("members", schema, &star, &where_lin);
         if (r_lin == NULL || r_lin->row_count != 1) ok = th_fail("linear select count");
-        if (ok && atoi(r_lin->rows[0].data[0]) != 25) ok = th_fail("linear id mismatch");
-
-        /* 인덱스 경로: storage_select with WHERE id = 25 → executor 가 내부에서
-         * 인덱스 경로를 쓰는지 확인하기 위해 execute_select 는 결과를 stdout 으로
-         * 찍는다. 여기서는 storage_select 가 같은 답을 주는지 비교.
-         * (PK 경로는 executor 레벨에서만 최적화되므로 storage_select 는 여전히
-         *  풀 스캔이지만, 결과의 정합성을 비교하는 용도로는 충분하다.) */
-        memset(&where_idx, 0, sizeof(where_idx));
-        where_idx.condition_count = 1;
-        strncpy(where_idx.conditions[0].column_name, "id",
-                sizeof(where_idx.conditions[0].column_name) - 1);
-        strncpy(where_idx.conditions[0].operator, "=",
-                sizeof(where_idx.conditions[0].operator) - 1);
-        strncpy(where_idx.conditions[0].value, "25",
-                sizeof(where_idx.conditions[0].value) - 1);
-        r_idx = storage_select("members", schema, &star, &where_idx);
-        if (r_idx == NULL || r_idx->row_count != 1) ok = th_fail("id select count");
-        if (ok && strcmp(r_idx->rows[0].data[1], "m25") != 0) ok = th_fail("id name mismatch");
+        if (ok && strcmp(r_lin->rows[0].data[0], idx_row.data[0]) != 0) {
+            ok = th_fail("linear/index id mismatch");
+        }
+        if (ok && strcmp(r_lin->rows[0].data[1], idx_row.data[1]) != 0) {
+            ok = th_fail("linear/index name mismatch");
+        }
     }
 
-    if (r_idx) free_result_set(r_idx);
     if (r_lin) free_result_set(r_lin);
     if (schema) schema_free(schema);
     index_drop_all();

@@ -92,7 +92,7 @@ make run-f SQL=sql/members_demo.sql
 ./tools/gen_members 500000 --out /tmp/members.tbl # 경로 지정
 ```
 
-기록된 파일은 다음 쿼리 시 `IndexManager` 가 **lazy build** 로 자동 인덱싱한다.
+기록된 파일은 다음 쿼리 시 `IndexManager` 가 **lazy build** 로 자동 인덱싱하고, 결과를 `.idx` 로 저장한다.
 
 ### 4.2 SQL 모드 (INSERT 경로 검증용)
 
@@ -291,7 +291,7 @@ rm -f data/members.tbl
 | 파일 | 역할 | 주요 함수 |
 | --- | --- | --- |
 | `src/btree.c` | B+ 트리 (order 64, leaf 연결 리스트) | `btree_insert`, `btree_find`, `btree_max_key`, `split_leaf`, `split_internal` |
-| `src/index.c` | 테이블→트리 캐시, lazy build | `index_get_or_build`, `build_from_file` |
+| `src/index.c` | 테이블→트리 캐시, persisted `.idx`, stale/corrupt 복구 | `index_get_or_build`, `index_lookup_offset`, `build_from_file` |
 | `src/storage.c` | `.tbl` I/O + 오프셋 반환 | `storage_insert` (out_offset), `storage_read_row_at` |
 | `src/executor.c` | auto-increment, PK 중복 검사, 인덱스 SELECT 경로 | `auto_assign_pk`, `ensure_primary_key_is_unique`, `try_index_select`, `execute_insert`, `execute_select` |
 | `src/main.c` | CLI, `--bench` | `run_benchmark` |
@@ -303,8 +303,8 @@ rm -f data/members.tbl
 1. `main.c → run_sql_script → run_single_statement`
 2. `lexer → parser → execute → execute_select`
 3. `try_index_select` 가 "단일 동등 + PK" 판정
-4. `index_get_or_build` 로 트리 확보 (최초 1회만 풀스캔하여 lazy build)
-5. `btree_find(500000)` → 파일 오프셋 반환
+4. `index_lookup_offset` 가 캐시 / persisted `.idx` / `.tbl` 재빌드 중 최적 경로를 선택
+5. `btree_find(500000)` 또는 `.idx` 이진 탐색 → 파일 오프셋 반환
 6. `storage_read_row_at` 로 단일 행만 `fseek` + `fgets`
 7. 결과 출력
 
@@ -313,7 +313,7 @@ rm -f data/members.tbl
 2. PK 미지정 → `auto_assign_pk` → `btree_max_key + 1`
 3. 중복 검사 스킵 (자동증가는 유일성 보장)
 4. `storage_insert(..., &offset)` → 파일 append + `ftell`
-5. `btree_insert(id, offset)` 로 인덱스 등록
+5. `index_record_insert(id, offset)` 로 캐시와 `.idx` 를 함께 갱신
 
 ## 9. 트러블슈팅
 
@@ -327,7 +327,71 @@ rm -f data/members.tbl
 
 ## 10. 현재 제약사항
 
-- **메모리 기반**: 엔진 종료 시 트리는 사라지고, 다음 실행에서 lazy build 로 재구축
+- **warm cache 는 메모리 기반**: 프로세스 종료 시 트리는 사라지지만, 다음 실행에서 `.idx` 또는 `.tbl` 기준으로 복구
 - **INT PK 전용**: 다른 타입 PK 는 인덱싱하지 않음
 - **단일 동등 WHERE 만 최적화**: `WHERE id = K` 한정. `BETWEEN`, `IN`, `>=` 등은 선형 스캔
 - **`ResultSet.rows[MAX_ROWS=10000]`**: 풀스캔 결과가 10000 을 넘으면 잘림. 단일 매치 벤치에서는 영향 없음
+
+## 11. 빠른 명령어 모음
+
+### 빌드 / 테스트
+
+```bash
+make
+make debug
+make tools
+make test
+make clean
+```
+
+### 기본 실행
+
+```bash
+./sqlengine -f sql/members_30.sql
+make run-f SQL=sql/members_demo.sql
+./sqlengine -e "SELECT * FROM members WHERE id = 500000;"
+./sqlengine -e "SELECT * FROM members WHERE name = 'name_0500000';"
+```
+
+### 대량 데이터 생성
+
+```bash
+./tools/gen_members 1000000
+./tools/gen_members 500000 --out /tmp/members.tbl
+./tools/gen_members 10000 --mode sql --out /tmp/seed.sql
+./sqlengine -f /tmp/seed.sql
+```
+
+### 벤치마크
+
+```bash
+./sqlengine --bench members --runs 5
+./sqlengine --bench members --runs 5 --bulk-pct 50
+./sqlengine --bench members --runs 5 --bulk-rows 20000
+./sqlengine --bench members --runs 5 --bulk-sweep
+```
+
+### INSERT / auto-increment 확인
+
+```bash
+rm -f data/members.tbl
+./sqlengine -e "INSERT INTO members (name, age) VALUES ('alice', 30);"
+./sqlengine -e "INSERT INTO members (name, age) VALUES ('bob', 25);"
+./sqlengine -e "INSERT INTO members (name, age) VALUES ('carol', 22);"
+./sqlengine -e "INSERT INTO members (id, name, age) VALUES (100, 'explicit', 40);"
+./sqlengine -e "INSERT INTO members (name, age) VALUES ('next', 31);"
+./sqlengine -e "SELECT * FROM members;"
+./sqlengine -e "INSERT INTO members (id, name, age) VALUES (100, 'dup', 99);"
+```
+
+### 시연용 빠른 흐름
+
+```bash
+make && make tools
+./tools/gen_members 1000000
+./sqlengine --bench members --runs 5
+./sqlengine --bench members --runs 5 --bulk-pct 50
+./sqlengine --bench members --runs 5 --bulk-sweep
+./sqlengine -e "SELECT * FROM members WHERE id = 777777;"
+./sqlengine -e "SELECT * FROM members WHERE name = 'name_0777777';"
+```

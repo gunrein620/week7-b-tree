@@ -72,8 +72,8 @@ WHERE id = ? 할 때 →  B+ 트리로 오프셋을 찾아 그 위치만 읽기
 
 | 결정 | 이유 |
 |------|------|
-| **B+ 트리를 메모리에만 둔다** | 디스크 페이지 관리를 생략하고 탐색 알고리즘 자체에 집중 |
-| **인덱스는 lazy build** | 첫 조회 시점에 `.tbl` 풀스캔 1회로 구축, 이후 캐시 재사용 |
+| **warm cache 는 메모리에 둔다** | 질의 중에는 B+ 트리를 재사용해 O(log N) 탐색을 유지 |
+| **인덱스는 lazy build + `.idx` persist** | 첫 조회 시점에 `.tbl` 풀스캔 1회로 구축하고, 이후 `.idx` 재사용/복구까지 지원 |
 | **기존 인터페이스 최소 변경** | `storage_insert()`에 `out_offset` 파라미터만 추가, 6주차 코드 거의 그대로 유지 |
 
 ---
@@ -130,7 +130,7 @@ make clean      # 빌드 아티팩트 정리
 | **Storage** | `storage.c` | `.tbl` 파일 읽기·쓰기, 파일 오프셋 반환 |
 | **Schema** | `schema.c` | `.schema` 파일 파싱 및 `Schema` 구조체 로드 |
 | **BTree** | `btree.c` | 메모리 기반 B+ 트리 (`int32 id → int64 offset`) |
-| **Index** | `index.c` | 테이블명 → BTree 캐시, 첫 접근 시 lazy build |
+| **Index** | `index.c` | 테이블명 → BTree 캐시 + persisted `.idx`, stale/corrupt 시 재빌드 |
 | **Config** | `config.c` | 데이터·스키마 디렉토리 경로 등 전역 설정 |
 
 ### INSERT 흐름
@@ -140,7 +140,7 @@ INSERT 문
   └─► execute_insert()
         ├─► auto_assign_pk()          ← id 미지정 시 btree_max_key + 1
         ├─► storage_insert(&offset)   ← .tbl 에 레코드 append, 파일 오프셋 반환
-        └─► btree_insert(id, offset)  ← 인덱스 등록
+        └─► index_record_insert(id, offset) ← 캐시 갱신 + `.idx` 동기화
 ```
 
 ### SELECT (WHERE id = ?) 흐름
@@ -149,8 +149,8 @@ INSERT 문
 SELECT ... WHERE id = N
   └─► execute_select()
         └─► try_index_select()
-              ├─► index_get_or_build()       ← 캐시 조회 (없으면 .tbl 풀스캔 1회)
-              ├─► btree_find(N)              ← O(log N) 탐색 → 파일 오프셋
+              ├─► index_lookup_offset()      ← 캐시 / `.idx` / `.tbl` 재빌드 경로 선택
+              ├─► btree_find(N) 또는 `.idx` 이진 탐색 → 파일 오프셋
               └─► storage_read_row_at(offset) ← 해당 위치 단일 행만 읽기
 ```
 
@@ -170,10 +170,11 @@ week7-b-tree/
 │   ├── schema.c / schema.h     # 스키마 파일 로드 · 관리
 │   ├── config.c / config.h     # 데이터 경로 등 전역 설정
 │   ├── btree.c / btree.h       # 메모리 기반 B+ 트리 (order 64, leaf 연결 리스트)
-│   └── index.c / index.h       # 인덱스 캐시 (테이블명 → BTree*, lazy build)
+│   └── index.c / index.h       # 인덱스 캐시 + persisted `.idx` 관리
 ├── tests/                      # 유닛·통합 테스트 (프레임워크 없이 순수 C)
 │   ├── test_btree.c            # B+ 트리 — 삽입/조회/split 경계 등 7케이스
-│   ├── test_index_integration.c# 인덱스 통합 — auto-increment · lazy build · 선형 일치
+│   ├── test_index_integration.c# 인덱스 통합 — auto-increment · lazy build · 실제 조회 일치
+│   ├── test_index_persistence.c# persisted `.idx` — 생성 · 손상 복구 · stale 감지
 │   ├── test_executor.c         # 실행기 테스트
 │   ├── test_storage.c          # 스토리지 테스트
 │   ├── test_lexer.c            # 어휘 분석기 테스트
@@ -202,7 +203,7 @@ week7-b-tree/
 
 ## 현재 제약사항
 
-- **메모리 기반**: 엔진 종료 시 트리는 사라지고, 다음 실행에서 lazy build로 재구축
+- **warm cache 는 메모리 기반**: 프로세스 종료 시 트리는 사라지지만, 다음 실행에서 `.idx` 또는 `.tbl` 기준으로 다시 복구
 - **INT PK 전용**: 다른 타입의 PK는 인덱싱하지 않음
 - **단일 동등 WHERE만 최적화**: `WHERE id = K` 한정. `BETWEEN`, `>=` 등은 선형 스캔
 - **ResultSet 상한**: 풀스캔 결과가 10,000건을 넘으면 잘림 (단일 매치 조회에는 무관)
@@ -217,4 +218,4 @@ week7-b-tree/
 - [x] `WHERE id = ?` 경로에서 인덱스 탐색 사용
 - [x] 100만+ 레코드 생성기 및 벤치마크 스크립트
 - [ ] 인덱스 사용 vs 선형 탐색 성능 비교 리포트 (공식 문서화)
-- [ ] 추가 차별화 요소 (범위 검색, 복합 인덱스, persist 등 검토)
+- [ ] 추가 차별화 요소 (범위 검색, 복합 인덱스 등 검토)

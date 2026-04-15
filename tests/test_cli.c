@@ -264,6 +264,78 @@ static int test_cli_order_by_desc_output(void) {
     return 1;
 }
 
+static int test_cli_pk_script_builds_persisted_idx(void) {
+    char workspace[PATH_MAX];
+    char schema_dir[PATH_MAX];
+    char data_dir[PATH_MAX];
+    char sql_dir[PATH_MAX];
+    char sql_path[PATH_MAX];
+    char index_path[PATH_MAX];
+    char out_path[PATH_MAX];
+    char err_path[PATH_MAX];
+    char command[4096];
+    char *stdout_text;
+    int exit_code;
+    int ok = 1;
+
+    if (!th_setup_workspace("cli_idx", workspace, sizeof(workspace))) {
+        return th_fail("failed to create temporary workspace");
+    }
+
+    th_join_path(schema_dir, sizeof(schema_dir), workspace, "schemas");
+    th_join_path(data_dir, sizeof(data_dir), workspace, "data");
+    th_join_path(sql_dir, sizeof(sql_dir), workspace, "sql");
+    th_join_path(sql_path, sizeof(sql_path), sql_dir, "queries.sql");
+    th_join_path(index_path, sizeof(index_path), data_dir, "members.idx");
+    th_join_path(out_path, sizeof(out_path), workspace, "stdout.txt");
+    th_join_path(err_path, sizeof(err_path), workspace, "stderr.txt");
+
+    if (!th_write_members_schema(schema_dir)) {
+        th_remove_tree(workspace);
+        return th_fail("failed to write members schema");
+    }
+    if (!th_write_text_file(sql_path,
+                            "INSERT INTO members (id, name, grade, class, age) VALUES "
+                            "(1, 'Alice', 'vip', 'advanced', 30);\n"
+                            "INSERT INTO members (id, name, grade, class, age) VALUES "
+                            "(2, 'Bob', 'normal', 'basic', 22);\n"
+                            "SELECT id, name FROM members WHERE id = 2;\n")) {
+        th_remove_tree(workspace);
+        return th_fail("failed to write SQL script");
+    }
+
+    snprintf(command,
+             sizeof(command),
+             "%s -s \"%s\" -d \"%s\" -f \"%s\" > \"%s\" 2> \"%s\"",
+             TEST_SQLENGINE_COMMAND,
+             schema_dir,
+             data_dir,
+             sql_path,
+             out_path,
+             err_path);
+
+    exit_code = exit_code_from_system(system(command));
+    stdout_text = th_read_text_file(out_path);
+
+    if (exit_code != 0) {
+        ok = th_fail("CLI PK script should exit with 0");
+    }
+    if (ok && stdout_text == NULL) {
+        ok = th_fail("failed to read PK script output");
+    }
+    if (ok && (!th_string_contains(stdout_text, "1 row(s) selected.") ||
+               !th_string_contains(stdout_text, "Bob"))) {
+        ok = th_fail("CLI PK script output missing indexed SELECT result");
+    }
+    if (ok && !th_file_exists(index_path)) {
+        ok = th_fail("CLI PK script should leave members.idx behind");
+    }
+
+    free(stdout_text);
+    th_remove_tree(workspace);
+    return ok;
+}
+
 static int test_cli_bench_bulk_output(void) {
     char workspace[PATH_MAX];
     char schema_dir[PATH_MAX];
@@ -456,6 +528,15 @@ int main(void) {
     } else {
         failed++;
         th_print_result("cli_order_by_desc_output", 0);
+    }
+
+    th_reset_reason();
+    if (test_cli_pk_script_builds_persisted_idx()) {
+        passed++;
+        th_print_result("cli_pk_script_builds_persisted_idx", 1);
+    } else {
+        failed++;
+        th_print_result("cli_pk_script_builds_persisted_idx", 0);
     }
 
     th_reset_reason();

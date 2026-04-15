@@ -513,14 +513,12 @@ int execute_insert(Statement *stmt) {
     /* 저장이 성공했으니 인덱스에도 등록 (INT PK 에 한해). */
     pk_index = find_primary_key_index(schema);
     if (pk_index >= 0 && schema->columns[pk_index].type == COL_INT) {
-        BTree *tree = index_get_or_build(stmt->table_name, schema);
-        if (tree != NULL) {
-            long key_long;
-            char *end_ptr;
-            key_long = strtol(row.data[pk_index], &end_ptr, 10);
-            if (*end_ptr == '\0') {
-                (void)btree_insert(tree, (int32_t)key_long, row_offset);
-            }
+        long key_long;
+        char *end_ptr;
+
+        key_long = strtol(row.data[pk_index], &end_ptr, 10);
+        if (*end_ptr == '\0') {
+            index_record_insert(stmt->table_name, (int32_t)key_long, row_offset);
         }
     }
 
@@ -569,8 +567,8 @@ static int try_index_select(Statement *stmt, Schema *schema, ResultSet **out) {
     long key_long;
     char *end_ptr;
     int64_t offset;
-    BTree *tree;
     ResultSet *result;
+    int lookup_rc;
 
     if (stmt->where.condition_count != 1) {
         return 0;
@@ -593,17 +591,18 @@ static int try_index_select(Statement *stmt, Schema *schema, ResultSet **out) {
     }
     key = (int32_t)key_long;
 
-    tree = index_get_or_build(stmt->table_name, schema);
-    if (tree == NULL) {
-        return 0;
-    }
-
     result = build_projected_result(schema, &stmt->select_columns);
     if (result == NULL) {
         return -1;
     }
 
-    if (btree_find(tree, key, &offset)) {
+    lookup_rc = index_lookup_offset(stmt->table_name, schema, key, &offset);
+    if (lookup_rc < 0) {
+        free_result_set(result);
+        return 0;
+    }
+
+    if (lookup_rc > 0) {
         Row row;
         if (!storage_read_row_at(stmt->table_name, schema, offset, &row)) {
             free_result_set(result);
