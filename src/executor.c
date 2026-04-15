@@ -317,6 +317,7 @@ static int ensure_primary_key_is_unique(Schema *schema, Row *row) {
  * 호출 측은 pk_index 가 INT 이고 값이 비어있음을 이미 확인한 상태여야 한다. */
 static int auto_assign_pk(Schema *schema, Row *row, int pk_index) {
     BTree *tree;
+    int32_t max_key;
     int32_t next_id;
 
     tree = index_get_or_build(schema->table_name, schema);
@@ -326,7 +327,16 @@ static int auto_assign_pk(Schema *schema, Row *row, int pk_index) {
                 schema->table_name);
         return 0;
     }
-    next_id = btree_max_key(tree) + 1;
+
+    max_key = btree_max_key(tree);
+    if (btree_size(tree) > 0 && max_key == INT32_MAX) {
+        fprintf(stderr,
+                "[ERROR] Executor: auto-increment overflow on '%s'\n",
+                schema->table_name);
+        return 0;
+    }
+
+    next_id = max_key + 1;
     snprintf(row->data[pk_index], MAX_TOKEN_LEN, "%d", next_id);
     return 1;
 }
@@ -586,7 +596,7 @@ static int try_index_select(Statement *stmt, Schema *schema, ResultSet **out) {
     }
 
     key_long = strtol(stmt->where.conditions[0].value, &end_ptr, 10);
-    if (*end_ptr != '\0') {
+    if (*end_ptr != '\0' || key_long < INT32_MIN || key_long > INT32_MAX) {
         return 0;
     }
     key = (int32_t)key_long;

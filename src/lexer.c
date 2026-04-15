@@ -90,6 +90,15 @@ static TokenType keyword_type_for(const char *value) {
     return TOKEN_IDENT;
 }
 
+static int lexer_token_too_long(const char *kind, int line, int max_length) {
+    fprintf(stderr,
+            "[ERROR] Lexer: %s too long at line %d (max %d characters)\n",
+            kind,
+            line,
+            max_length);
+    return -1;
+}
+
 static int read_string_literal(const char *sql,
                                int *cursor,
                                int line,
@@ -103,9 +112,10 @@ static int read_string_literal(const char *sql,
     while (sql[index] != '\0') {
         if (sql[index] == '\'') {
             if (sql[index + 1] == '\'') {
-                if (length < MAX_TOKEN_LEN - 1) {
-                    buffer[length++] = '\'';
+                if (length >= MAX_TOKEN_LEN - 1) {
+                    return lexer_token_too_long("string literal", line, MAX_TOKEN_LEN - 1);
                 }
+                buffer[length++] = '\'';
                 index += 2;
                 continue;
             }
@@ -115,9 +125,10 @@ static int read_string_literal(const char *sql,
             return append_token(tokens, count, capacity, TOKEN_STRING, buffer, line);
         }
 
-        if (length < MAX_TOKEN_LEN - 1) {
-            buffer[length++] = sql[index];
+        if (length >= MAX_TOKEN_LEN - 1) {
+            return lexer_token_too_long("string literal", line, MAX_TOKEN_LEN - 1);
         }
+        buffer[length++] = sql[index];
         index++;
     }
 
@@ -138,9 +149,10 @@ static int read_number_literal(const char *sql,
     int seen_digit = 0;
 
     if (sql[index] == '+' || sql[index] == '-') {
-        if (length < MAX_TOKEN_LEN - 1) {
-            buffer[length++] = sql[index];
+        if (length >= MAX_TOKEN_LEN - 1) {
+            return lexer_token_too_long("number literal", line, MAX_TOKEN_LEN - 1);
         }
+        buffer[length++] = sql[index];
         index++;
     }
 
@@ -154,9 +166,10 @@ static int read_number_literal(const char *sql,
             seen_digit = 1;
         }
 
-        if (length < MAX_TOKEN_LEN - 1) {
-            buffer[length++] = sql[index];
+        if (length >= MAX_TOKEN_LEN - 1) {
+            return lexer_token_too_long("number literal", line, MAX_TOKEN_LEN - 1);
         }
+        buffer[length++] = sql[index];
         index++;
     }
 
@@ -216,9 +229,15 @@ Token *tokenize(const char *sql, int *token_count) {
             int length = 0;
 
             while (isalnum((unsigned char)sql[cursor]) || sql[cursor] == '_') {
-                if (length < MAX_TOKEN_LEN - 1) {
-                    raw[length++] = sql[cursor];
+                if (length >= MAX_IDENTIFIER_LEN - 1) {
+                    fprintf(stderr,
+                            "[ERROR] Lexer: identifier too long at line %d (max %d characters)\n",
+                            line,
+                            MAX_IDENTIFIER_LEN - 1);
+                    free(tokens);
+                    return NULL;
                 }
+                raw[length++] = sql[cursor];
                 cursor++;
             }
             raw[length] = '\0';

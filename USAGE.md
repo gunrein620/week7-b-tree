@@ -338,9 +338,21 @@ rm -f data/members.tbl
 
 ```bash
 make
+```
+
+```bash
 make debug
+```
+
+```bash
 make tools
+```
+
+```bash
 make test
+```
+
+```bash
 make clean
 ```
 
@@ -348,8 +360,17 @@ make clean
 
 ```bash
 ./sqlengine -f sql/members_30.sql
+```
+
+```bash
 make run-f SQL=sql/members_demo.sql
+```
+
+```bash
 ./sqlengine -e "SELECT * FROM members WHERE id = 500000;"
+```
+
+```bash
 ./sqlengine -e "SELECT * FROM members WHERE name = 'name_0500000';"
 ```
 
@@ -357,8 +378,17 @@ make run-f SQL=sql/members_demo.sql
 
 ```bash
 ./tools/gen_members 1000000
+```
+
+```bash
 ./tools/gen_members 500000 --out /tmp/members.tbl
+```
+
+```bash
 ./tools/gen_members 10000 --mode sql --out /tmp/seed.sql
+```
+
+```bash
 ./sqlengine -f /tmp/seed.sql
 ```
 
@@ -366,8 +396,17 @@ make run-f SQL=sql/members_demo.sql
 
 ```bash
 ./sqlengine --bench members --runs 5
+```
+
+```bash
 ./sqlengine --bench members --runs 5 --bulk-pct 50
+```
+
+```bash
 ./sqlengine --bench members --runs 5 --bulk-rows 20000
+```
+
+```bash
 ./sqlengine --bench members --runs 5 --bulk-sweep
 ```
 
@@ -375,12 +414,33 @@ make run-f SQL=sql/members_demo.sql
 
 ```bash
 rm -f data/members.tbl
+```
+
+```bash
 ./sqlengine -e "INSERT INTO members (name, age) VALUES ('alice', 30);"
+```
+
+```bash
 ./sqlengine -e "INSERT INTO members (name, age) VALUES ('bob', 25);"
+```
+
+```bash
 ./sqlengine -e "INSERT INTO members (name, age) VALUES ('carol', 22);"
+```
+
+```bash
 ./sqlengine -e "INSERT INTO members (id, name, age) VALUES (100, 'explicit', 40);"
+```
+
+```bash
 ./sqlengine -e "INSERT INTO members (name, age) VALUES ('next', 31);"
+```
+
+```bash
 ./sqlengine -e "SELECT * FROM members;"
+```
+
+```bash
 ./sqlengine -e "INSERT INTO members (id, name, age) VALUES (100, 'dup', 99);"
 ```
 
@@ -388,10 +448,28 @@ rm -f data/members.tbl
 
 ```bash
 make && make tools
+```
+
+```bash
 ./tools/gen_members 1000000
+```
+
+```bash
 ./sqlengine --bench members --runs 5
+```
+
+```bash
 ./sqlengine --bench members --runs 5 --bulk-pct 50
+```
+
+```bash
 ./sqlengine --bench members --runs 5 --bulk-sweep
+```
+
+```bash
 ./sqlengine -e "SELECT * FROM members WHERE id = 777777;"
+```
+
+```bash
 ./sqlengine -e "SELECT * FROM members WHERE name = 'name_0777777';"
 ```

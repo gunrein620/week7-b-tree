@@ -13,6 +13,13 @@
 
 프로젝트 루트에서 실행합니다.
 
+macOS / Linux:
+
+```bash
+cd /Users/kunwoopark/WS/jungle-12/week7-b-tree
+make edge-test
+```
+
 PowerShell:
 
 ```powershell
@@ -27,11 +34,88 @@ cd /c/Users/kjh/Desktop/week7_WD_project/week7-b-tree
 make edge-test
 ```
 
-개별 실행도 가능합니다.
+개별 테스트는 빌드와 실행을 따로 할 수 있습니다.
+직접 실행할 때는 먼저 해당 바이너리를 한 번 빌드해 두는 것이 안전합니다.
+
+### 1. PK 경계값 테스트: `test_pk_boundaries`
+
+확인하는 내용:
+
+- `INT32_MAX` 직접 삽입이 가능한지
+- 최대 PK 다음 auto-increment가 overflow 없이 실패하는지
+- `WHERE id = 2147483648` 같은 범위 초과 조회가 기존 row를 잘못 찾지 않는지
+
+개별 빌드:
+
+```bash
+make build/edgecase_test/test_pk_boundaries
+```
+
+개별 실행:
+
+macOS / Linux
+
+```bash
+./build/edgecase_test/test_pk_boundaries
+```
+
+Windows PowerShell
 
 ```powershell
 .\build\edgecase_test\test_pk_boundaries.exe
+```
+
+### 2. 인덱스 복원력 테스트: `test_index_resilience`
+
+확인하는 내용:
+
+- 손상된 `members.idx`가 있어도 `.tbl` 기준으로 다시 복구되는지
+- 프로세스가 살아 있는 동안 `.tbl`이 외부 변경되었을 때 stale in-memory index 문제가 드러나는지
+
+개별 빌드:
+
+```bash
+make build/edgecase_test/test_index_resilience
+```
+
+개별 실행:
+
+macOS / Linux
+
+```bash
+./build/edgecase_test/test_index_resilience
+```
+
+Windows PowerShell
+
+```powershell
 .\build\edgecase_test\test_index_resilience.exe
+```
+
+### 3. 토큰 길이 제한 테스트: `test_token_limits`
+
+확인하는 내용:
+
+- 256자를 넘는 긴 문자열 리터럴이 조용히 잘리지 않고 실패하는지
+- 256자를 넘는 긴 식별자가 조용히 잘리지 않고 실패하는지
+
+개별 빌드:
+
+```bash
+make build/edgecase_test/test_token_limits
+```
+
+개별 실행:
+
+macOS / Linux
+
+```bash
+./build/edgecase_test/test_token_limits
+```
+
+Windows PowerShell
+
+```powershell
 .\build\edgecase_test\test_token_limits.exe
 ```
 
