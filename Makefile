@@ -1,5 +1,5 @@
 CC = gcc
-BASE_CFLAGS = -std=c99 -Wall -Wextra -I./src
+BASE_CFLAGS = -std=c99 -Wall -Wextra -D_POSIX_C_SOURCE=200809L -I./src
 RELEASE_FLAGS = -O2
 DEBUG_FLAGS = -g -DDEBUG
 

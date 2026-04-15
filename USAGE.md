@@ -85,6 +85,7 @@ make run-f SQL=sql/members_demo.sql
 ```
 
 기록된 파일은 다음 쿼리 시 `IndexManager` 가 **lazy build** 로 자동 인덱싱한다.
+생성된 인덱스는 `data/<table>.idx` 에 저장되어, 이후 새 프로세스에서도 재사용된다.
 
 ### 4.2 SQL 모드 (INSERT 경로 검증용)
 
@@ -219,7 +220,8 @@ rm -f data/members.tbl
 rm -f data/members.tbl
 ./tools/gen_members 500000
 ./sqlengine -e "SELECT * FROM members WHERE id = 123456;"
-# 첫 쿼리에서 IndexManager 가 한 번 풀스캔하여 트리를 만든 뒤 O(log n) 조회
+# 첫 쿼리에서 IndexManager 가 한 번 풀스캔하여 트리를 만들고 .idx 를 저장한 뒤 O(log n) 조회
+# 이후 프로세스들은 .idx 를 바로 사용하므로 다시 .tbl 전체를 스캔하지 않는다
 ```
 
 ## 8. 아키텍처 연결 지점 (핵심 로직 포인터)
@@ -263,7 +265,8 @@ rm -f data/members.tbl
 
 ## 10. 현재 제약사항
 
-- **메모리 기반**: 엔진 종료 시 트리는 사라지고, 다음 실행에서 lazy build 로 재구축
+- **하이브리드 인덱스**: 프로세스 내부 B+ 트리 캐시에 더해 `data/<table>.idx` 를 저장한다.
+  새 프로세스는 이 파일을 이용해 PK 조회를 바로 수행하고, INSERT 가 발생하면 .idx 를 무효화한 뒤 다음 조회 시 재생성한다.
 - **INT PK 전용**: 다른 타입 PK 는 인덱싱하지 않음
 - **단일 동등 WHERE 만 최적화**: `WHERE id = K` 한정. `BETWEEN`, `IN`, `>=` 등은 선형 스캔
 - **`ResultSet.rows[MAX_ROWS=10000]`**: 풀스캔 결과가 10000 을 넘으면 잘림. 단일 매치 벤치에서는 영향 없음

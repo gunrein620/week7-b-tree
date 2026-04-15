@@ -281,3 +281,28 @@ int32_t btree_max_key(BTree *tree) {
 size_t btree_size(BTree *tree) {
     return tree ? tree->size : 0;
 }
+
+int btree_visit_in_order(BTree *tree, BTreeVisitFn visitor, void *ctx) {
+    BTreeNode *node;
+    int i;
+
+    if (tree == NULL || tree->root == NULL || visitor == NULL) {
+        return 0;
+    }
+
+    node = tree->root;
+    while (!node->is_leaf) {
+        node = node->children[0];
+    }
+
+    while (node != NULL) {
+        for (i = 0; i < node->num_keys; ++i) {
+            if (!visitor(node->keys[i], node->values[i], ctx)) {
+                return 0;
+            }
+        }
+        node = node->next;
+    }
+
+    return 1;
+}
