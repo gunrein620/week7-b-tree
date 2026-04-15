@@ -66,6 +66,8 @@ static double timespec_diff_usec(bench_time_t start, bench_time_t end) {
 }
 #endif
 
+#define BENCH_BAR_WIDTH 36
+
 static int run_benchmark_split(const char *table_name, int runs);
 
 /* 인덱스 경로 vs 선형 스캔 경로를 같은 크기의 테이블에서 벤치마크한다.
@@ -483,6 +485,72 @@ static int benchmark_linear_core_avg(const char *table_name,
     return 1;
 }
 
+static void format_benchmark_duration(double usec, char *buffer, size_t size) {
+    if (usec >= 1000000.0) {
+        snprintf(buffer, size, "%.2f s", usec / 1000000.0);
+    } else if (usec >= 1000.0) {
+        snprintf(buffer, size, "%.2f ms", usec / 1000.0);
+    } else {
+        snprintf(buffer, size, "%.2f us", usec);
+    }
+}
+
+static void build_benchmark_bar(char *buffer, size_t size, double value, double max_value) {
+    int filled = 0;
+    int index;
+
+    if (size == 0) {
+        return;
+    }
+    if (size <= (size_t)BENCH_BAR_WIDTH) {
+        buffer[0] = '\0';
+        return;
+    }
+
+    if (max_value > 0.0 && value > 0.0) {
+        double ratio = value / max_value;
+
+        if (ratio > 1.0) {
+            ratio = 1.0;
+        }
+        filled = (int)(ratio * BENCH_BAR_WIDTH + 0.5);
+        if (filled < 1) {
+            filled = 1;
+        }
+        if (filled > BENCH_BAR_WIDTH) {
+            filled = BENCH_BAR_WIDTH;
+        }
+    }
+
+    for (index = 0; index < BENCH_BAR_WIDTH; ++index) {
+        buffer[index] = (index < filled) ? '#' : '.';
+    }
+    buffer[BENCH_BAR_WIDTH] = '\0';
+}
+
+static void print_benchmark_bar_line(const char *label, double value_usec, double max_value_usec) {
+    char bar[BENCH_BAR_WIDTH + 1];
+    char duration[32];
+
+    build_benchmark_bar(bar, sizeof(bar), value_usec, max_value_usec);
+    format_benchmark_duration(value_usec, duration, sizeof(duration));
+    printf("[BENCH]   %-7s [%s] %10s\n", label, bar, duration);
+}
+
+static void print_benchmark_group(const char *title,
+                                  const char *indexed_label,
+                                  double indexed_usec,
+                                  const char *linear_label,
+                                  double linear_usec,
+                                  double speedup) {
+    double max_value = (indexed_usec > linear_usec) ? indexed_usec : linear_usec;
+
+    printf("[BENCH] %s\n", title);
+    print_benchmark_bar_line(indexed_label, indexed_usec, max_value);
+    print_benchmark_bar_line(linear_label, linear_usec, max_value);
+    printf("[BENCH]   speedup %10.2fx\n", speedup);
+}
+
 static int run_benchmark_split(const char *table_name, int runs) {
     Schema *schema;
     BTree *tree;
@@ -510,6 +578,7 @@ static int run_benchmark_split(const char *table_name, int runs) {
     double warm_e2e_speedup;
     double cold_core_speedup;
     double warm_core_speedup;
+    double build_scale_usec;
     int index;
 
     schema = schema_load(table_name);
@@ -683,34 +752,46 @@ static int run_benchmark_split(const char *table_name, int runs) {
     warm_core_speedup =
         (warm_indexed_core_usec > 0.0) ? (warm_linear_core_usec / warm_indexed_core_usec) : 0.0;
 
-    printf("[BENCH] cold indexed e2e (1 run, lazy build included): %10.2f us\n",
-           cold_indexed_e2e_usec);
-    printf("[BENCH] cold linear  e2e (1 run):                     %10.2f us\n",
-           cold_linear_e2e_usec);
-    printf("[BENCH] warm indexed e2e (%d runs):               %10.2f us\n",
-           runs,
-           warm_indexed_e2e_usec);
-    printf("[BENCH] warm linear  e2e (%d runs):               %10.2f us\n",
-           runs,
-           warm_linear_e2e_usec);
-    printf("[BENCH] cold indexed core (1 run):                   %10.2f us\n",
-           cold_indexed_core_usec);
-    printf("[BENCH] cold linear  core (1 run):                   %10.2f us\n",
-           cold_linear_core_usec);
-    printf("[BENCH] warm indexed core (%d runs):              %10.2f us\n",
-           runs,
-           warm_indexed_core_usec);
-    printf("[BENCH] warm linear  core (%d runs):              %10.2f us\n",
-           runs,
-           warm_linear_core_usec);
-    printf("[BENCH] cold e2e speedup:                         %10.2fx\n",
-           cold_e2e_speedup);
-    printf("[BENCH] warm e2e speedup:                         %10.2fx\n",
-           warm_e2e_speedup);
-    printf("[BENCH] cold core speedup:                        %10.2fx\n",
-           cold_core_speedup);
-    printf("[BENCH] warm core speedup:                        %10.2fx\n",
-           warm_core_speedup);
+    build_scale_usec = build_usec;
+    if (cold_linear_e2e_usec > build_scale_usec) {
+        build_scale_usec = cold_linear_e2e_usec;
+    }
+    if (warm_linear_e2e_usec > build_scale_usec) {
+        build_scale_usec = warm_linear_e2e_usec;
+    }
+    if (cold_linear_core_usec > build_scale_usec) {
+        build_scale_usec = cold_linear_core_usec;
+    }
+    if (warm_linear_core_usec > build_scale_usec) {
+        build_scale_usec = warm_linear_core_usec;
+    }
+
+    printf("[BENCH] build only\n");
+    print_benchmark_bar_line("build", build_usec, build_scale_usec);
+    print_benchmark_group("cold e2e (1 run, lazy build included)",
+                          "indexed",
+                          cold_indexed_e2e_usec,
+                          "linear",
+                          cold_linear_e2e_usec,
+                          cold_e2e_speedup);
+    print_benchmark_group("warm e2e (avg over repeated runs)",
+                          "indexed",
+                          warm_indexed_e2e_usec,
+                          "linear",
+                          warm_linear_e2e_usec,
+                          warm_e2e_speedup);
+    print_benchmark_group("cold core (1 run)",
+                          "indexed",
+                          cold_indexed_core_usec,
+                          "linear",
+                          cold_linear_core_usec,
+                          cold_core_speedup);
+    print_benchmark_group("warm core (avg over repeated runs)",
+                          "indexed",
+                          warm_indexed_core_usec,
+                          "linear",
+                          warm_linear_core_usec,
+                          warm_core_speedup);
 
     schema_free(schema);
     index_drop_all();

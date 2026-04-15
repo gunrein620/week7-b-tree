@@ -9,7 +9,7 @@
 #endif
 
 #ifdef _WIN32
-#define TEST_SQLENGINE_COMMAND "sqlengine.exe"
+#define TEST_SQLENGINE_COMMAND ".\\sqlengine.cmd"
 #else
 #define TEST_SQLENGINE_COMMAND "./sqlengine"
 #endif

@@ -5,17 +5,45 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "${script_dir}" && pwd)
 uname_s=$(uname -s 2>/dev/null || echo unknown)
 
+run_windows_command() {
+    cmd_name=$1
+    shift
+
+    cmdline=$cmd_name
+    while [ $# -gt 0 ]; do
+        case $1 in
+            *[!A-Za-z0-9_./:=+-]*)
+                escaped_arg=$(printf '%s' "$1" | sed 's/"/""/g')
+                cmdline="${cmdline} \"${escaped_arg}\""
+                ;;
+            *)
+                cmdline="${cmdline} $1"
+                ;;
+        esac
+        shift
+    done
+
+    cd "${repo_root}"
+    exec env MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 cmd.exe /c "${cmdline}"
+}
+
 case "${OS:-}:${OSTYPE:-}:${uname_s}" in
     Windows_NT:*:*|*:msys*:*|*:cygwin*:*|*:*:MINGW*|*:*:MSYS*)
         bin_rel="sqlengine.exe"
+        cmd_rel="sqlengine.cmd"
         ;;
     *)
         bin_rel="sqlengine.bin"
         ;;
 esac
 
-if ! make -C "${repo_root}" -q "${bin_rel}" 2>/dev/null; then
-    make -C "${repo_root}" "${bin_rel}"
+if ! make --no-print-directory -C "${repo_root}" -q "${bin_rel}" 2>/dev/null; then
+    make --no-print-directory -C "${repo_root}" "${bin_rel}"
 fi
 
-exec "${repo_root}/${bin_rel}" "$@"
+if [ "${bin_rel}" = "sqlengine.exe" ]; then
+    run_windows_command "${cmd_rel}" "$@"
+fi
+
+cd "${repo_root}"
+exec "./${bin_rel}" "$@"

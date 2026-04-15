@@ -4,6 +4,29 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
 
+run_windows_command() {
+    local cmd_name="$1"
+    local cmdline
+
+    shift
+    cmdline="$cmd_name"
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            *[!A-Za-z0-9_./:=+-]*)
+                local escaped_arg="${1//\"/\"\"}"
+                cmdline="${cmdline} \"${escaped_arg}\""
+                ;;
+            *)
+                cmdline="${cmdline} $1"
+                ;;
+        esac
+        shift
+    done
+
+    cd "${repo_root}"
+    exec env MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 cmd.exe /c "${cmdline}"
+}
+
 if [[ "${OS:-}" == "Windows_NT" || "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
     bin_rel="tools/gen_members.exe"
 else
@@ -14,7 +37,12 @@ bin_path="${repo_root}/${bin_rel}"
 src_path="${script_dir}/gen_members.c"
 
 if [[ ! -f "${bin_path}" || "${src_path}" -nt "${bin_path}" ]]; then
-    make -C "${repo_root}" "${bin_rel}"
+    make --no-print-directory -C "${repo_root}" "${bin_rel}"
 fi
 
-exec "${bin_path}" "$@"
+if [[ "${bin_rel}" == "tools/gen_members.exe" ]]; then
+    run_windows_command "tools\\gen_members.exe" "$@"
+fi
+
+cd "${repo_root}"
+exec "./${bin_rel}" "$@"
