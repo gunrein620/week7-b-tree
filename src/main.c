@@ -12,7 +12,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define TokenType Win32TokenType
+#include <windows.h>
+#undef TokenType
+#else
 #include <time.h>
+#endif
 
 static void print_help(void) {
     puts("Usage: ./sqlengine [-f file | -e sql] [-d data_dir] [-s schema_dir]");
@@ -26,130 +34,48 @@ static void print_help(void) {
     puts("  --version           Show version");
 }
 
-static double timespec_diff_usec(struct timespec start, struct timespec end) {
+#ifdef _WIN32
+typedef LARGE_INTEGER bench_time_t;
+
+static void bench_time_now(bench_time_t *timestamp) {
+    QueryPerformanceCounter(timestamp);
+}
+
+static double timespec_diff_usec(bench_time_t start, bench_time_t end) {
+    static LARGE_INTEGER frequency;
+    static int frequency_loaded = 0;
+
+    if (!frequency_loaded) {
+        QueryPerformanceFrequency(&frequency);
+        frequency_loaded = 1;
+    }
+
+    return (double)(end.QuadPart - start.QuadPart) * 1e6 / (double)frequency.QuadPart;
+}
+#else
+typedef struct timespec bench_time_t;
+
+static void bench_time_now(bench_time_t *timestamp) {
+    clock_gettime(CLOCK_MONOTONIC, timestamp);
+}
+
+static double timespec_diff_usec(bench_time_t start, bench_time_t end) {
     double sec = (double)(end.tv_sec - start.tv_sec);
     double nsec = (double)(end.tv_nsec - start.tv_nsec);
     return sec * 1e6 + nsec / 1e3;
 }
+#endif
+
+#define BENCH_BAR_WIDTH 36
+
+static int run_benchmark_split(const char *table_name, int runs);
 
 /* 인덱스 경로 vs 선형 스캔 경로를 같은 크기의 테이블에서 벤치마크한다.
  * - 인덱스 경로: btree_find + storage_read_row_at  (O(log n) + 1 seek)
  * - 선형 경로:   storage_select with WHERE name = ?  (O(n) 풀 스캔)
  * 두 쿼리 모두 "id=K 인 행" 을 가리키도록 key 와 name 을 동기화한다. */
 static int run_benchmark(const char *table_name, int runs) {
-    Schema *schema;
-    BTree *tree;
-    int32_t max_key;
-    int32_t target_key;
-    char name_buf[64];
-    struct timespec t0;
-    struct timespec t1;
-    double total_index = 0.0;
-    double total_linear = 0.0;
-    int i;
-    int pk_index;
-
-    schema = schema_load(table_name);
-    if (schema == NULL) {
-        fprintf(stderr, "[BENCH] failed to load schema '%s'\n", table_name);
-        return 1;
-    }
-    pk_index = -1;
-    for (i = 0; i < schema->column_count; ++i) {
-        if (schema->columns[i].is_primary_key) {
-            pk_index = i;
-            break;
-        }
-    }
-    if (pk_index < 0 || schema->columns[pk_index].type != COL_INT) {
-        fprintf(stderr, "[BENCH] table '%s' has no INT primary key\n", table_name);
-        schema_free(schema);
-        return 1;
-    }
-
-    /* 인덱스 구축 시간도 한번 측정한다 (최초 쿼리의 lazy build 비용). */
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    tree = index_get_or_build(table_name, schema);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    if (tree == NULL) {
-        fprintf(stderr, "[BENCH] failed to build index\n");
-        schema_free(schema);
-        return 1;
-    }
-    printf("[BENCH] table=%s rows=%zu build=%.1f us\n",
-           table_name,
-           btree_size(tree),
-           timespec_diff_usec(t0, t1));
-
-    max_key = btree_max_key(tree);
-    if (max_key <= 0) {
-        fprintf(stderr, "[BENCH] table is empty\n");
-        schema_free(schema);
-        return 1;
-    }
-    /* 범위 한가운데 키를 고정 타겟으로 사용. */
-    target_key = max_key / 2;
-    if (target_key <= 0) {
-        target_key = 1;
-    }
-    snprintf(name_buf, sizeof(name_buf), "name_%07d", (int)target_key);
-
-    printf("[BENCH] target id=%d name='%s' runs=%d\n",
-           (int)target_key,
-           name_buf,
-           runs);
-
-    for (i = 0; i < runs; ++i) {
-        int64_t offset = -1;
-        Row row;
-
-        /* 인덱스 경로 */
-        clock_gettime(CLOCK_MONOTONIC, &t0);
-        if (btree_find(tree, target_key, &offset)) {
-            storage_read_row_at(table_name, schema, offset, &row);
-        }
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        total_index += timespec_diff_usec(t0, t1);
-
-        /* 선형 경로: storage_select 를 직접 호출하여 print 오버헤드 제거 */
-        {
-            ColumnList star;
-            WhereClause where;
-            ResultSet *result;
-
-            memset(&star, 0, sizeof(star));
-            star.is_star = 1;
-            memset(&where, 0, sizeof(where));
-            where.condition_count = 1;
-            strncpy(where.conditions[0].column_name, "name",
-                    sizeof(where.conditions[0].column_name) - 1);
-            strncpy(where.conditions[0].operator, "=",
-                    sizeof(where.conditions[0].operator) - 1);
-            strncpy(where.conditions[0].value, name_buf,
-                    sizeof(where.conditions[0].value) - 1);
-
-            clock_gettime(CLOCK_MONOTONIC, &t0);
-            result = storage_select(table_name, schema, &star, &where);
-            clock_gettime(CLOCK_MONOTONIC, &t1);
-            if (result != NULL) {
-                free_result_set(result);
-            }
-            total_linear += timespec_diff_usec(t0, t1);
-        }
-    }
-
-    {
-        double avg_index = total_index / runs;
-        double avg_linear = total_linear / runs;
-        double speedup = (avg_index > 0.0) ? (avg_linear / avg_index) : 0.0;
-        printf("[BENCH] indexed avg: %10.2f us\n", avg_index);
-        printf("[BENCH] linear  avg: %10.2f us\n", avg_linear);
-        printf("[BENCH] speedup    : %10.2fx\n", speedup);
-    }
-
-    schema_free(schema);
-    index_drop_all();
-    return 0;
+    return run_benchmark_split(table_name, runs);
 }
 
 static char *read_file_contents(const char *path) {
@@ -247,6 +173,514 @@ static int run_single_statement(const char *sql) {
     free_statement(stmt);
     free_tokens(tokens);
     return exit_code;
+}
+
+static int run_single_statement_quiet(const char *sql) {
+    Token *tokens;
+    Statement *stmt;
+    int token_count = 0;
+    int exit_code = 0;
+    int previous_output_enabled;
+
+    tokens = tokenize(sql, &token_count);
+    if (tokens == NULL) {
+        return 1;
+    }
+
+    if (token_count == 1 && tokens[0].type == TOKEN_EOF) {
+        free_tokens(tokens);
+        return 0;
+    }
+
+    stmt = parse(tokens, token_count);
+    if (stmt == NULL) {
+        free_tokens(tokens);
+        return 1;
+    }
+
+    previous_output_enabled = executor_set_output_enabled(0);
+    if (execute(stmt) != 0) {
+        exit_code = 2;
+    }
+    executor_set_output_enabled(previous_output_enabled);
+
+    free_statement(stmt);
+    free_tokens(tokens);
+    return exit_code;
+}
+
+static int escape_sql_string_literal(char *buffer, size_t size, const char *value) {
+    size_t write_index = 0;
+    size_t read_index;
+
+    if (size == 0) {
+        return 0;
+    }
+
+    for (read_index = 0; value[read_index] != '\0'; ++read_index) {
+        if (write_index + 2 >= size) {
+            return 0;
+        }
+        if (value[read_index] == '\'') {
+            buffer[write_index++] = '\'';
+        }
+        buffer[write_index++] = value[read_index];
+    }
+
+    buffer[write_index] = '\0';
+    return 1;
+}
+
+static int build_select_sql(char *buffer,
+                            size_t size,
+                            const char *table_name,
+                            const char *column_name,
+                            ColumnType type,
+                            const char *value) {
+    if (type == COL_INT || type == COL_FLOAT) {
+        return snprintf(buffer,
+                        size,
+                        "SELECT * FROM %s WHERE %s = %s;",
+                        table_name,
+                        column_name,
+                        value) < (int)size;
+    }
+
+    {
+        char escaped_value[MAX_TOKEN_LEN * 2];
+
+        if (!escape_sql_string_literal(escaped_value, sizeof(escaped_value), value)) {
+            return 0;
+        }
+
+        return snprintf(buffer,
+                        size,
+                        "SELECT * FROM %s WHERE %s = '%s';",
+                        table_name,
+                        column_name,
+                        escaped_value) < (int)size;
+    }
+}
+
+static int benchmark_statement_once(const char *sql, double *out_usec) {
+    bench_time_t t0;
+    bench_time_t t1;
+    int rc;
+
+    bench_time_now(&t0);
+    rc = run_single_statement_quiet(sql);
+    bench_time_now(&t1);
+
+    if (rc != 0) {
+        return 0;
+    }
+
+    *out_usec = timespec_diff_usec(t0, t1);
+    return 1;
+}
+
+static int benchmark_statement_avg(const char *sql, int runs, double *out_avg_usec) {
+    double total_usec = 0.0;
+    int index;
+
+    for (index = 0; index < runs; ++index) {
+        double elapsed_usec;
+
+        if (!benchmark_statement_once(sql, &elapsed_usec)) {
+            return 0;
+        }
+        total_usec += elapsed_usec;
+    }
+
+    *out_avg_usec = total_usec / runs;
+    return 1;
+}
+
+static int benchmark_index_core_avg(BTree *tree,
+                                    const char *table_name,
+                                    Schema *schema,
+                                    int32_t target_key,
+                                    int runs,
+                                    double *out_avg_usec) {
+    double total_usec = 0.0;
+    int index;
+
+    for (index = 0; index < runs; ++index) {
+        int64_t offset = -1;
+        Row row;
+        bench_time_t t0;
+        bench_time_t t1;
+
+        bench_time_now(&t0);
+        if (btree_find(tree, target_key, &offset)) {
+            if (!storage_read_row_at(table_name, schema, offset, &row)) {
+                return 0;
+            }
+        }
+        bench_time_now(&t1);
+        total_usec += timespec_diff_usec(t0, t1);
+    }
+
+    *out_avg_usec = total_usec / runs;
+    return 1;
+}
+
+static int benchmark_linear_core_avg(const char *table_name,
+                                     Schema *schema,
+                                     const char *column_name,
+                                     const char *value,
+                                     int runs,
+                                     double *out_avg_usec) {
+    double total_usec = 0.0;
+    int index;
+    ColumnList star;
+    WhereClause where;
+
+    memset(&star, 0, sizeof(star));
+    star.is_star = 1;
+
+    memset(&where, 0, sizeof(where));
+    where.condition_count = 1;
+    strncpy(where.conditions[0].column_name,
+            column_name,
+            sizeof(where.conditions[0].column_name) - 1);
+    strncpy(where.conditions[0].operator,
+            "=",
+            sizeof(where.conditions[0].operator) - 1);
+    strncpy(where.conditions[0].value,
+            value,
+            sizeof(where.conditions[0].value) - 1);
+
+    for (index = 0; index < runs; ++index) {
+        ResultSet *result;
+        bench_time_t t0;
+        bench_time_t t1;
+
+        bench_time_now(&t0);
+        result = storage_select(table_name, schema, &star, &where);
+        bench_time_now(&t1);
+        if (result == NULL) {
+            return 0;
+        }
+        free_result_set(result);
+        total_usec += timespec_diff_usec(t0, t1);
+    }
+
+    *out_avg_usec = total_usec / runs;
+    return 1;
+}
+
+static void format_benchmark_duration(double usec, char *buffer, size_t size) {
+    if (usec >= 1000000.0) {
+        snprintf(buffer, size, "%.2f s", usec / 1000000.0);
+    } else if (usec >= 1000.0) {
+        snprintf(buffer, size, "%.2f ms", usec / 1000.0);
+    } else {
+        snprintf(buffer, size, "%.2f us", usec);
+    }
+}
+
+static void build_benchmark_bar(char *buffer, size_t size, double value, double max_value) {
+    int filled = 0;
+    int index;
+
+    if (size == 0) {
+        return;
+    }
+    if (size <= (size_t)BENCH_BAR_WIDTH) {
+        buffer[0] = '\0';
+        return;
+    }
+
+    if (max_value > 0.0 && value > 0.0) {
+        double ratio = value / max_value;
+
+        if (ratio > 1.0) {
+            ratio = 1.0;
+        }
+        filled = (int)(ratio * BENCH_BAR_WIDTH + 0.5);
+        if (filled < 1) {
+            filled = 1;
+        }
+        if (filled > BENCH_BAR_WIDTH) {
+            filled = BENCH_BAR_WIDTH;
+        }
+    }
+
+    for (index = 0; index < BENCH_BAR_WIDTH; ++index) {
+        buffer[index] = (index < filled) ? '#' : '.';
+    }
+    buffer[BENCH_BAR_WIDTH] = '\0';
+}
+
+static void print_benchmark_bar_line(const char *label, double value_usec, double max_value_usec) {
+    char bar[BENCH_BAR_WIDTH + 1];
+    char duration[32];
+
+    build_benchmark_bar(bar, sizeof(bar), value_usec, max_value_usec);
+    format_benchmark_duration(value_usec, duration, sizeof(duration));
+    printf("[BENCH]   %-7s [%s] %10s\n", label, bar, duration);
+}
+
+static void print_benchmark_group(const char *title,
+                                  const char *indexed_label,
+                                  double indexed_usec,
+                                  const char *linear_label,
+                                  double linear_usec,
+                                  double speedup) {
+    double max_value = (indexed_usec > linear_usec) ? indexed_usec : linear_usec;
+
+    printf("[BENCH] %s\n", title);
+    print_benchmark_bar_line(indexed_label, indexed_usec, max_value);
+    print_benchmark_bar_line(linear_label, linear_usec, max_value);
+    printf("[BENCH]   speedup %10.2fx\n", speedup);
+}
+
+static int run_benchmark_split(const char *table_name, int runs) {
+    Schema *schema;
+    BTree *tree;
+    Row target_row;
+    int64_t target_offset = -1;
+    int32_t max_key;
+    int32_t target_key;
+    int pk_index;
+    int linear_index;
+    char indexed_sql[256];
+    char linear_sql[512];
+    char linear_value[MAX_TOKEN_LEN];
+    double build_usec;
+    double cold_indexed_e2e_usec;
+    double cold_linear_e2e_usec;
+    double warm_indexed_e2e_usec;
+    double warm_linear_e2e_usec;
+    double cold_indexed_core_usec;
+    double cold_linear_core_usec;
+    double warm_indexed_core_usec;
+    double warm_linear_core_usec;
+    bench_time_t t0;
+    bench_time_t t1;
+    double cold_e2e_speedup;
+    double warm_e2e_speedup;
+    double cold_core_speedup;
+    double warm_core_speedup;
+    double build_scale_usec;
+    int index;
+
+    schema = schema_load(table_name);
+    if (schema == NULL) {
+        fprintf(stderr, "[BENCH] failed to load schema '%s'\n", table_name);
+        return 1;
+    }
+
+    pk_index = -1;
+    for (index = 0; index < schema->column_count; ++index) {
+        if (schema->columns[index].is_primary_key) {
+            pk_index = index;
+            break;
+        }
+    }
+    if (pk_index < 0 || schema->columns[pk_index].type != COL_INT) {
+        fprintf(stderr, "[BENCH] table '%s' has no INT primary key\n", table_name);
+        schema_free(schema);
+        return 1;
+    }
+
+    linear_index = schema_get_column_index(schema, "name");
+    if (linear_index < 0 || linear_index == pk_index) {
+        fprintf(stderr,
+                "[BENCH] table '%s' needs a non-PK 'name' column for linear benchmark\n",
+                table_name);
+        schema_free(schema);
+        return 1;
+    }
+
+    bench_time_now(&t0);
+    tree = index_get_or_build(table_name, schema);
+    bench_time_now(&t1);
+    if (tree == NULL) {
+        fprintf(stderr, "[BENCH] failed to build index\n");
+        schema_free(schema);
+        return 1;
+    }
+    build_usec = timespec_diff_usec(t0, t1);
+
+    max_key = btree_max_key(tree);
+    if (max_key <= 0) {
+        fprintf(stderr, "[BENCH] table is empty\n");
+        schema_free(schema);
+        return 1;
+    }
+
+    target_key = max_key / 2;
+    if (target_key <= 0) {
+        target_key = 1;
+    }
+
+    if (!btree_find(tree, target_key, &target_offset) ||
+        !storage_read_row_at(table_name, schema, target_offset, &target_row)) {
+        fprintf(stderr, "[BENCH] failed to load target row for key %d\n", (int)target_key);
+        schema_free(schema);
+        return 1;
+    }
+
+    strncpy(linear_value,
+            target_row.data[linear_index],
+            sizeof(linear_value) - 1);
+    linear_value[sizeof(linear_value) - 1] = '\0';
+
+    if (!build_select_sql(indexed_sql,
+                          sizeof(indexed_sql),
+                          table_name,
+                          schema->columns[pk_index].name,
+                          schema->columns[pk_index].type,
+                          target_row.data[pk_index]) ||
+        !build_select_sql(linear_sql,
+                          sizeof(linear_sql),
+                          table_name,
+                          schema->columns[linear_index].name,
+                          schema->columns[linear_index].type,
+                          linear_value)) {
+        fprintf(stderr, "[BENCH] failed to build benchmark SQL\n");
+        schema_free(schema);
+        return 1;
+    }
+
+    printf("[BENCH] table=%s rows=%zu build_only=%.1f us\n",
+           table_name,
+           btree_size(tree),
+           build_usec);
+    printf("[BENCH] target pk=%s value=%s linear=%s value='%s' warm_runs=%d\n",
+           schema->columns[pk_index].name,
+           target_row.data[pk_index],
+           schema->columns[linear_index].name,
+           linear_value,
+           runs);
+
+    index_drop_all();
+
+    if (!benchmark_statement_once(indexed_sql, &cold_indexed_e2e_usec)) {
+        fprintf(stderr, "[BENCH] cold indexed end-to-end benchmark failed\n");
+        schema_free(schema);
+        return 1;
+    }
+    if (!benchmark_statement_once(linear_sql, &cold_linear_e2e_usec)) {
+        fprintf(stderr, "[BENCH] cold linear end-to-end benchmark failed\n");
+        schema_free(schema);
+        return 1;
+    }
+
+    tree = index_get_or_build(table_name, schema);
+    if (tree == NULL) {
+        fprintf(stderr, "[BENCH] failed to reuse warm index\n");
+        schema_free(schema);
+        return 1;
+    }
+
+    if (!benchmark_index_core_avg(tree,
+                                  table_name,
+                                  schema,
+                                  target_key,
+                                  1,
+                                  &cold_indexed_core_usec)) {
+        fprintf(stderr, "[BENCH] cold indexed core benchmark failed\n");
+        schema_free(schema);
+        return 1;
+    }
+    if (!benchmark_linear_core_avg(table_name,
+                                   schema,
+                                   schema->columns[linear_index].name,
+                                   linear_value,
+                                   1,
+                                   &cold_linear_core_usec)) {
+        fprintf(stderr, "[BENCH] cold linear core benchmark failed\n");
+        schema_free(schema);
+        return 1;
+    }
+
+    if (!benchmark_statement_avg(indexed_sql, runs, &warm_indexed_e2e_usec)) {
+        fprintf(stderr, "[BENCH] warm indexed end-to-end benchmark failed\n");
+        schema_free(schema);
+        return 1;
+    }
+    if (!benchmark_statement_avg(linear_sql, runs, &warm_linear_e2e_usec)) {
+        fprintf(stderr, "[BENCH] warm linear end-to-end benchmark failed\n");
+        schema_free(schema);
+        return 1;
+    }
+    if (!benchmark_index_core_avg(tree,
+                                  table_name,
+                                  schema,
+                                  target_key,
+                                  runs,
+                                  &warm_indexed_core_usec)) {
+        fprintf(stderr, "[BENCH] warm indexed core benchmark failed\n");
+        schema_free(schema);
+        return 1;
+    }
+    if (!benchmark_linear_core_avg(table_name,
+                                   schema,
+                                   schema->columns[linear_index].name,
+                                   linear_value,
+                                   runs,
+                                   &warm_linear_core_usec)) {
+        fprintf(stderr, "[BENCH] warm linear core benchmark failed\n");
+        schema_free(schema);
+        return 1;
+    }
+
+    cold_e2e_speedup =
+        (cold_indexed_e2e_usec > 0.0) ? (cold_linear_e2e_usec / cold_indexed_e2e_usec) : 0.0;
+    warm_e2e_speedup =
+        (warm_indexed_e2e_usec > 0.0) ? (warm_linear_e2e_usec / warm_indexed_e2e_usec) : 0.0;
+    cold_core_speedup =
+        (cold_indexed_core_usec > 0.0) ? (cold_linear_core_usec / cold_indexed_core_usec) : 0.0;
+    warm_core_speedup =
+        (warm_indexed_core_usec > 0.0) ? (warm_linear_core_usec / warm_indexed_core_usec) : 0.0;
+
+    build_scale_usec = build_usec;
+    if (cold_linear_e2e_usec > build_scale_usec) {
+        build_scale_usec = cold_linear_e2e_usec;
+    }
+    if (warm_linear_e2e_usec > build_scale_usec) {
+        build_scale_usec = warm_linear_e2e_usec;
+    }
+    if (cold_linear_core_usec > build_scale_usec) {
+        build_scale_usec = cold_linear_core_usec;
+    }
+    if (warm_linear_core_usec > build_scale_usec) {
+        build_scale_usec = warm_linear_core_usec;
+    }
+
+    printf("[BENCH] build only\n");
+    print_benchmark_bar_line("build", build_usec, build_scale_usec);
+    print_benchmark_group("cold e2e (1 run, lazy build included)",
+                          "indexed",
+                          cold_indexed_e2e_usec,
+                          "linear",
+                          cold_linear_e2e_usec,
+                          cold_e2e_speedup);
+    print_benchmark_group("warm e2e (avg over repeated runs)",
+                          "indexed",
+                          warm_indexed_e2e_usec,
+                          "linear",
+                          warm_linear_e2e_usec,
+                          warm_e2e_speedup);
+    print_benchmark_group("cold core (1 run)",
+                          "indexed",
+                          cold_indexed_core_usec,
+                          "linear",
+                          cold_linear_core_usec,
+                          cold_core_speedup);
+    print_benchmark_group("warm core (avg over repeated runs)",
+                          "indexed",
+                          warm_indexed_core_usec,
+                          "linear",
+                          warm_linear_core_usec,
+                          warm_core_speedup);
+
+    schema_free(schema);
+    index_drop_all();
+    return 0;
 }
 
 /* 문자열 안의 세미콜론은 보존하고, 실제 문장 경계만 분리한다. */

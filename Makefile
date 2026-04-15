@@ -1,5 +1,5 @@
 CC = gcc
-BASE_CFLAGS = -std=c99 -Wall -Wextra -I./src
+BASE_CFLAGS = -std=c99 -Wall -Wextra -D_POSIX_C_SOURCE=200809L -I./src
 RELEASE_FLAGS = -O2
 DEBUG_FLAGS = -g -DDEBUG
 
@@ -13,20 +13,31 @@ LIB_OBJS = $(filter-out $(BUILD_DIR)/main.o,$(OBJS))
 
 TEST_SRCS = $(wildcard tests/test_*.c)
 TEST_OBJS = $(patsubst tests/%.c,$(TEST_BUILD_DIR)/%.o,$(TEST_SRCS))
-TEST_BINS = $(patsubst tests/%.c,$(TEST_BUILD_DIR)/%,$(TEST_SRCS))
 
 CFLAGS = $(BASE_CFLAGS) $(RELEASE_FLAGS)
+
+ifeq ($(OS),Windows_NT)
+EXE_EXT = .exe
+SQLENGINE_BIN = sqlengine.exe
+GEN_MEMBERS_BIN = tools/gen_members.exe
+else
+EXE_EXT =
+SQLENGINE_BIN = sqlengine.bin
+GEN_MEMBERS_BIN = tools/gen_members.bin
+endif
+
+TEST_BINS = $(patsubst tests/%.c,$(TEST_BUILD_DIR)/%$(EXE_EXT),$(TEST_SRCS))
 
 .PHONY: all debug test clean help run-f directories tools
 
 all: CFLAGS = $(BASE_CFLAGS) $(RELEASE_FLAGS)
-all: directories sqlengine
+all: directories $(SQLENGINE_BIN)
 
 debug: CFLAGS = $(BASE_CFLAGS) $(DEBUG_FLAGS)
-debug: directories sqlengine
+debug: directories $(SQLENGINE_BIN)
 
 test: CFLAGS = $(BASE_CFLAGS) $(DEBUG_FLAGS)
-test: directories sqlengine $(TEST_BINS)
+test: directories $(SQLENGINE_BIN) $(TEST_BINS)
 	@passed=0; failed=0; \
 	for test_bin in $(TEST_BINS); do \
 		$$test_bin; \
@@ -55,12 +66,14 @@ run-f: all
 	fi
 	./sqlengine -f $(SQL)
 
-sqlengine: $(OBJS)
+sqlengine: $(SQLENGINE_BIN)
+
+$(SQLENGINE_BIN): $(OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
 
-tools: tools/gen_members
+tools: $(GEN_MEMBERS_BIN)
 
-tools/gen_members: tools/gen_members.c | directories
+$(GEN_MEMBERS_BIN): tools/gen_members.c | directories
 	$(CC) $(BASE_CFLAGS) $(RELEASE_FLAGS) $< -o $@
 
 $(BUILD_DIR)/%.o: src/%.c | directories
@@ -71,14 +84,15 @@ $(TEST_BUILD_DIR)/%.o: tests/%.c | directories
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(TEST_BUILD_DIR)/%: $(TEST_BUILD_DIR)/%.o $(LIB_OBJS) | directories sqlengine
+$(TEST_BUILD_DIR)/%$(EXE_EXT): $(TEST_BUILD_DIR)/%.o $(LIB_OBJS) | directories $(SQLENGINE_BIN)
 	$(CC) $(CFLAGS) $^ -o $@
 
 directories:
 	@mkdir -p $(BUILD_DIR) $(TEST_BUILD_DIR) data schemas sql
 
 clean:
-	rm -rf build sqlengine
+	rm -rf build sqlengine.bin sqlengine.exe tools/gen_members.bin tools/gen_members.exe
+	-rm -f sqlengine.exe.tmp*
 
 -include $(OBJS:.o=.d)
 -include $(TEST_OBJS:.o=.d)

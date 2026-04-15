@@ -2,15 +2,15 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo_root=$(CDPATH= cd -- "${script_dir}/.." && pwd)
+repo_root=$(CDPATH= cd -- "${script_dir}" && pwd)
 uname_s=$(uname -s 2>/dev/null || echo unknown)
 
 case "${OS:-}:${OSTYPE:-}:${uname_s}" in
     Windows_NT:*:*|*:msys*:*|*:cygwin*:*|*:*:MINGW*|*:*:MSYS*)
-        bin_rel="tools/gen_members.exe"
+        bin_rel="sqlengine.exe"
         ;;
     *)
-        bin_rel="tools/gen_members.bin"
+        bin_rel="sqlengine.bin"
         ;;
 esac
 

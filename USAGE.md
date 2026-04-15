@@ -12,10 +12,15 @@ make test     # 전체 단위/통합 테스트
 make clean    # 아티팩트 정리
 ```
 
+POSIX 환경에서는 `./sqlengine`, `./tools/gen_members` 런처가 적절한 `*.bin` 산출물을 자동으로 빌드/실행한다.
+Windows에서는 대응하는 `*.exe` 산출물을 직접 사용한다.
+
 빌드 산출물:
-- `./sqlengine`  — SQL 엔진 CLI
-- `./tools/gen_members` — 대량 더미 데이터 생성기
-- `./build/tests/test_*` — 개별 테스트 실행파일
+- `./sqlengine` — POSIX 런처
+- `./tools/gen_members` — POSIX 런처
+- `./sqlengine.bin` 또는 `./sqlengine.exe` — 실제 SQL 엔진 바이너리
+- `./tools/gen_members.bin` 또는 `./tools/gen_members.exe` — 실제 대량 데이터 생성기 바이너리
+- `./build/tests/test_*` — 개별 테스트 실행파일 (`Windows`에서는 `.exe`)
 
 ## 2. CLI 개요
 
@@ -104,16 +109,24 @@ make run-f SQL=sql/members_demo.sql
 출력 예 (1,000,000 행 기준):
 
 ```
-[BENCH] table=members rows=1000000 build=92956.0 us
-[BENCH] target id=500000 name='name_0500000' runs=5
-[BENCH] indexed avg:      49.00 us
-[BENCH] linear  avg:  145965.80 us
-[BENCH] speedup    :    2978.89x
+[BENCH] table=members rows=1000000 build_only=92956.0 us
+[BENCH] target pk=id value=500000 linear=name value='name_0500000' warm_runs=5
+[BENCH] build only
+[BENCH]   build   [########............................]   92.96 ms
+[BENCH] cold e2e (1 run, lazy build included)
+[BENCH]   indexed [###.................................]    1.15 ms
+[BENCH]   linear  [####################################]  145.97 ms
+[BENCH]   speedup     126.93x
+[BENCH] warm core (avg over repeated runs)
+[BENCH]   indexed [#...................................]   49.00 us
+[BENCH]   linear  [####################################]  145.97 ms
+[BENCH]   speedup    2978.89x
 ```
 
-- **build**: `.tbl` 스캔 후 B+ 트리 구축 시간 (lazy build 1회 비용)
-- **indexed avg**: `btree_find` + 파일 seek 한 번 (O(log n) + 1 seek)
-- **linear avg**: `storage_select` 의 전체 파일 라인스캔
+- **build only**: `.tbl` 스캔 후 B+ 트리 구축 시간 (lazy build 1회 비용)
+- **cold e2e**: lexer/parser/executor까지 포함한 첫 indexed SELECT 전체 시간
+- **warm e2e**: 인덱스가 이미 메모리에 올라온 뒤의 전체 SQL 실행 평균 시간
+- **cold/warm core**: `btree_find` 와 `storage_select` 핵심 경로만 직접 측정한 시간
 - **speedup**: `linear / indexed`
 
 `--runs` 를 올리면 노이즈가 줄고, 낮추면 빠르게 확인 가능.

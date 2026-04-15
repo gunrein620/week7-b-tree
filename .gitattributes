@@ -1,0 +1,2 @@
+sqlengine text eol=lf
+tools/gen_members text eol=lf
