@@ -4,16 +4,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
+
+#ifdef _WIN32
+#define TEST_SQLENGINE_COMMAND "sqlengine.exe"
+#else
+#define TEST_SQLENGINE_COMMAND "./sqlengine"
+#endif
 
 static int exit_code_from_system(int status) {
     if (status == -1) {
         return -1;
     }
+#ifdef _WIN32
+    return status;
+#else
     if (!WIFEXITED(status)) {
         return -1;
     }
     return WEXITSTATUS(status);
+#endif
 }
 
 static int test_cli_executes_e_option(void) {
@@ -42,8 +54,9 @@ static int test_cli_executes_e_option(void) {
 
     snprintf(command,
              sizeof(command),
-             "./sqlengine -s %s -d %s -e \"INSERT INTO members (id, name, grade, class, age) "
-             "VALUES (1, 'Alice', 'vip', 'advanced', 30);\" > %s 2> %s",
+             "%s -s \"%s\" -d \"%s\" -e \"INSERT INTO members (id, name, grade, class, age) "
+             "VALUES (1, 'Alice', 'vip', 'advanced', 30);\" > \"%s\" 2> \"%s\"",
+             TEST_SQLENGINE_COMMAND,
              schema_dir,
              data_dir,
              out_path,
@@ -105,7 +118,8 @@ static int test_cli_executes_file_script(void) {
 
     snprintf(command,
              sizeof(command),
-             "./sqlengine -s %s -d %s -f %s > %s 2> %s",
+             "%s -s \"%s\" -d \"%s\" -f \"%s\" > \"%s\" 2> \"%s\"",
+             TEST_SQLENGINE_COMMAND,
              schema_dir,
              data_dir,
              sql_path,
@@ -155,7 +169,8 @@ static int test_cli_parse_error_exit_code(void) {
 
     snprintf(command,
              sizeof(command),
-             "./sqlengine -s %s -d %s -e \"SELEC * FROM members;\" > %s 2> %s",
+             "%s -s \"%s\" -d \"%s\" -e \"SELEC * FROM members;\" > \"%s\" 2> \"%s\"",
+             TEST_SQLENGINE_COMMAND,
              schema_dir,
              data_dir,
              out_path,
@@ -215,7 +230,8 @@ static int test_cli_order_by_desc_output(void) {
 
     snprintf(command,
              sizeof(command),
-             "./sqlengine -s %s -d %s -f %s > %s 2> %s",
+             "%s -s \"%s\" -d \"%s\" -f \"%s\" > \"%s\" 2> \"%s\"",
+             TEST_SQLENGINE_COMMAND,
              schema_dir,
              data_dir,
              sql_path,

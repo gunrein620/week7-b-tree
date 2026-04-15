@@ -2,13 +2,21 @@
 #define TEST_HELPERS_H
 
 #include <dirent.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#include <process.h>
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #define TH_UNUSED __attribute__((unused))
@@ -17,6 +25,26 @@
 #endif
 
 static char g_test_failure_reason[256];
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+#ifdef _WIN32
+typedef struct _stat th_stat_t;
+#define TH_LSTAT(path, st) _stat((path), (st))
+#define TH_MKDIR(path) _mkdir(path)
+#define TH_RMDIR(path) _rmdir(path)
+#define TH_GETPID() _getpid()
+#define TH_ISDIR(mode) (((mode) & _S_IFDIR) != 0)
+#else
+typedef struct stat th_stat_t;
+#define TH_LSTAT(path, st) lstat((path), (st))
+#define TH_MKDIR(path) mkdir((path), 0777)
+#define TH_RMDIR(path) rmdir(path)
+#define TH_GETPID() getpid()
+#define TH_ISDIR(mode) S_ISDIR(mode)
+#endif
 
 static int th_fail(const char *reason) {
     strncpy(g_test_failure_reason, reason, sizeof(g_test_failure_reason) - 1);
@@ -48,13 +76,13 @@ static TH_UNUSED void th_join_path(char *buffer,
 }
 
 static TH_UNUSED void th_remove_tree(const char *path) {
-    struct stat st;
+    th_stat_t st;
 
-    if (lstat(path, &st) != 0) {
+    if (TH_LSTAT(path, &st) != 0) {
         return;
     }
 
-    if (S_ISDIR(st.st_mode)) {
+    if (TH_ISDIR(st.st_mode)) {
         DIR *dir = opendir(path);
         struct dirent *entry;
 
@@ -74,7 +102,7 @@ static TH_UNUSED void th_remove_tree(const char *path) {
         }
 
         closedir(dir);
-        rmdir(path);
+        TH_RMDIR(path);
     } else {
         remove(path);
     }
@@ -135,15 +163,36 @@ static TH_UNUSED char *th_read_text_file(const char *path) {
     return buffer;
 }
 
+static TH_UNUSED const char *th_temp_root(void) {
+    const char *root = getenv("TMPDIR");
+
+    if (root == NULL || root[0] == '\0') {
+        root = getenv("TEMP");
+    }
+    if (root == NULL || root[0] == '\0') {
+        root = getenv("TMP");
+    }
+    if (root == NULL || root[0] == '\0') {
+#ifdef _WIN32
+        root = ".";
+#else
+        root = "/tmp";
+#endif
+    }
+
+    return root;
+}
+
 static TH_UNUSED int th_setup_workspace(const char *name, char *workspace, size_t size) {
+    const char *temp_root = th_temp_root();
     char data_dir[PATH_MAX];
     char schema_dir[PATH_MAX];
     char sql_dir[PATH_MAX];
 
-    snprintf(workspace, size, "/tmp/sqlengine_%s_%ld", name, (long)getpid());
+    snprintf(workspace, size, "%s/sqlengine_%s_%ld", temp_root, name, (long)TH_GETPID());
     th_remove_tree(workspace);
 
-    if (mkdir(workspace, 0777) != 0) {
+    if (TH_MKDIR(workspace) != 0) {
         return 0;
     }
 
@@ -151,13 +200,13 @@ static TH_UNUSED int th_setup_workspace(const char *name, char *workspace, size_
     th_join_path(schema_dir, sizeof(schema_dir), workspace, "schemas");
     th_join_path(sql_dir, sizeof(sql_dir), workspace, "sql");
 
-    if (mkdir(data_dir, 0777) != 0) {
+    if (TH_MKDIR(data_dir) != 0) {
         return 0;
     }
-    if (mkdir(schema_dir, 0777) != 0) {
+    if (TH_MKDIR(schema_dir) != 0) {
         return 0;
     }
-    if (mkdir(sql_dir, 0777) != 0) {
+    if (TH_MKDIR(sql_dir) != 0) {
         return 0;
     }
 

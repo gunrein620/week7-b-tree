@@ -163,7 +163,7 @@ static int build_from_file(BTree *tree, Schema *schema, int pk_index) {
     long row_start;
 
     build_table_path(path, sizeof(path), schema->table_name);
-    file = fopen(path, "r");
+    file = fopen(path, "rb");
     if (file == NULL) {
         /* 파일이 없어도 빈 인덱스는 유효한 상태다. */
         return 1;

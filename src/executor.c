@@ -17,6 +17,14 @@
 static Schema *g_sort_schema = NULL;
 static int g_sort_column_index = -1;
 static SortDirection g_sort_direction = SORT_ASC;
+static int g_executor_output_enabled = 1;
+
+int executor_set_output_enabled(int enabled) {
+    int previous = g_executor_output_enabled;
+
+    g_executor_output_enabled = enabled ? 1 : 0;
+    return previous;
+}
 
 static int is_valid_int(const char *text) {
     char *end_ptr;
@@ -519,7 +527,9 @@ int execute_insert(Statement *stmt) {
     }
 
     schema_free(schema);
-    puts("1 row inserted.");
+    if (g_executor_output_enabled) {
+        puts("1 row inserted.");
+    }
     return 0;
 }
 
@@ -663,8 +673,10 @@ int execute_select(Statement *stmt) {
         sort_result_set(result, schema, order_column_index, stmt->order_by.direction);
     }
 
-    print_result_table(result);
-    printf("%d row(s) selected.\n", result->row_count);
+    if (g_executor_output_enabled) {
+        print_result_table(result);
+        printf("%d row(s) selected.\n", result->row_count);
+    }
 
     free_result_set(result);
     schema_free(schema);

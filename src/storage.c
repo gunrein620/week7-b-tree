@@ -219,13 +219,13 @@ int storage_insert(const char *table_name,
 
     snprintf(path, sizeof(path), "%s/%s.tbl", g_data_dir, schema->table_name);
 
-    check_file = fopen(path, "r");
+    check_file = fopen(path, "rb");
     if (check_file != NULL) {
         file_exists = 1;
         fclose(check_file);
     }
 
-    file = fopen(path, file_exists ? "a" : "w");
+    file = fopen(path, file_exists ? "ab" : "wb");
     if (file == NULL) {
         fprintf(stderr, "[ERROR] Storage: failed to open %s\n", path);
         return -1;
@@ -243,6 +243,12 @@ int storage_insert(const char *table_name,
     }
 
     /* 행 기록 직전 오프셋을 B+ 트리 인덱스가 보관할 수 있도록 반환. */
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fprintf(stderr, "[ERROR] Storage: fseek failed on %s\n", path);
+        fclose(file);
+        return -1;
+    }
+
     row_start = ftell(file);
     if (row_start < 0) {
         fprintf(stderr, "[ERROR] Storage: ftell failed on %s\n", path);
@@ -281,7 +287,7 @@ int storage_read_row_at(const char *table_name,
     }
 
     snprintf(path, sizeof(path), "%s/%s.tbl", g_data_dir, schema->table_name);
-    file = fopen(path, "r");
+    file = fopen(path, "rb");
     if (file == NULL) {
         return 0;
     }
@@ -347,7 +353,7 @@ ResultSet *storage_select(const char *table_name,
     }
 
     snprintf(path, sizeof(path), "%s/%s.tbl", g_data_dir, table_name);
-    file = fopen(path, "r");
+    file = fopen(path, "rb");
     if (file == NULL) {
         if (errno == ENOENT) {
             return result;

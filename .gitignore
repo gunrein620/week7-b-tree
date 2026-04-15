@@ -1,3 +1,8 @@
 build/
-sqlengine
+sqlengine.bin
+sqlengine.exe
+sqlengine.exe.tmp*
+tools/gen_members.exe
+tools/gen_members.bin
 data/*.tbl
+data/*.idx
