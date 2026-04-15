@@ -199,12 +199,16 @@ int evaluate_where(Row *row, Schema *schema, WhereClause *where) {
     return result;
 }
 
-int storage_insert(const char *table_name, Row *row, Schema *schema) {
+int storage_insert(const char *table_name,
+                   Row *row,
+                   Schema *schema,
+                   int64_t *out_offset) {
     char path[MAX_PATH_LEN];
     FILE *check_file;
     FILE *file;
     int column_index;
     int file_exists = 0;
+    long row_start;
 
     (void)table_name;
 
@@ -238,6 +242,14 @@ int storage_insert(const char *table_name, Row *row, Schema *schema) {
         fputc('\n', file);
     }
 
+    /* 행 기록 직전 오프셋을 B+ 트리 인덱스가 보관할 수 있도록 반환. */
+    row_start = ftell(file);
+    if (row_start < 0) {
+        fprintf(stderr, "[ERROR] Storage: ftell failed on %s\n", path);
+        fclose(file);
+        return -1;
+    }
+
     for (column_index = 0; column_index < schema->column_count; ++column_index) {
         fprintf(file, "%s", row->data[column_index]);
         if (column_index + 1 < schema->column_count) {
@@ -247,7 +259,48 @@ int storage_insert(const char *table_name, Row *row, Schema *schema) {
     fputc('\n', file);
 
     fclose(file);
+
+    if (out_offset != NULL) {
+        *out_offset = (int64_t)row_start;
+    }
     return 0;
+}
+
+int storage_read_row_at(const char *table_name,
+                        Schema *schema,
+                        int64_t offset,
+                        Row *out) {
+    char path[MAX_PATH_LEN];
+    FILE *file;
+    char line[4096];
+
+    (void)table_name;
+
+    if (schema == NULL || out == NULL) {
+        return 0;
+    }
+
+    snprintf(path, sizeof(path), "%s/%s.tbl", g_data_dir, schema->table_name);
+    file = fopen(path, "r");
+    if (file == NULL) {
+        return 0;
+    }
+
+    if (fseek(file, (long)offset, SEEK_SET) != 0) {
+        fclose(file);
+        return 0;
+    }
+    if (fgets(line, sizeof(line), file) == NULL) {
+        fclose(file);
+        return 0;
+    }
+    fclose(file);
+
+    strip_newline(line);
+    memset(out, 0, sizeof(*out));
+    out->column_count = schema->column_count;
+    split_pipe_line(line, out->data, schema->column_count);
+    return 1;
 }
 
 ResultSet *storage_select(const char *table_name,

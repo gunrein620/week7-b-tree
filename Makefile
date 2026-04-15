@@ -17,7 +17,7 @@ TEST_BINS = $(patsubst tests/%.c,$(TEST_BUILD_DIR)/%,$(TEST_SRCS))
 
 CFLAGS = $(BASE_CFLAGS) $(RELEASE_FLAGS)
 
-.PHONY: all debug test clean help run-f directories
+.PHONY: all debug test clean help run-f directories tools
 
 all: CFLAGS = $(BASE_CFLAGS) $(RELEASE_FLAGS)
 all: directories sqlengine
@@ -57,6 +57,11 @@ run-f: all
 
 sqlengine: $(OBJS)
 	$(CC) $(CFLAGS) $^ -o $@
+
+tools: tools/gen_members
+
+tools/gen_members: tools/gen_members.c | directories
+	$(CC) $(BASE_CFLAGS) $(RELEASE_FLAGS) $< -o $@
 
 $(BUILD_DIR)/%.o: src/%.c | directories
 	@mkdir -p $(dir $@)

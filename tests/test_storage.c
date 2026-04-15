@@ -53,7 +53,7 @@ static int test_insert_creates_header(void) {
     }
 
     fill_member_row(&row, "1", "Alice", "vip", "advanced", "30");
-    if (storage_insert("members", &row, schema) != 0) {
+    if (storage_insert("members", &row, schema, NULL) != 0) {
         schema_free(schema);
         th_remove_tree(workspace);
         return th_fail("storage_insert failed");
@@ -109,14 +109,14 @@ static int test_select_filters_rows(void) {
     }
 
     fill_member_row(&row, "1", "Alice", "vip", "advanced", "30");
-    if (storage_insert("members", &row, schema) != 0) {
+    if (storage_insert("members", &row, schema, NULL) != 0) {
         schema_free(schema);
         th_remove_tree(workspace);
         return th_fail("first insert failed");
     }
 
     fill_member_row(&row, "2", "Bob", "normal", "basic", "22");
-    if (storage_insert("members", &row, schema) != 0) {
+    if (storage_insert("members", &row, schema, NULL) != 0) {
         schema_free(schema);
         th_remove_tree(workspace);
         return th_fail("second insert failed");

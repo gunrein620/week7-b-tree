@@ -1,12 +1,15 @@
 #include "executor.h"
 
+#include "btree.h"
 #include "config.h"
+#include "index.h"
 #include "schema.h"
 #include "storage.h"
 
 #include <ctype.h>
 #include <errno.h>
 #include <float.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -229,46 +232,94 @@ static int validate_value(ColumnDef *column, const char *value, int is_null) {
     return 1;
 }
 
+/* 기존: storage_select 로 풀스캔 → O(n). 현재: B+ 트리로 O(log n).
+ * INSERT 경로의 중복 PK 검사를 인덱스 조회로 대체한다. */
 static int ensure_primary_key_is_unique(Schema *schema, Row *row) {
-    ColumnList star_columns;
-    WhereClause where_clause;
-    ResultSet *result;
+    BTree *tree;
     int pk_index;
+    long key_long;
+    char *end_ptr;
+    int64_t dummy_offset;
 
     pk_index = find_primary_key_index(schema);
     if (pk_index < 0) {
         return 1;
     }
+    if (schema->columns[pk_index].type != COL_INT) {
+        /* 현 엔진은 INT PK 만 인덱싱한다. 비 INT 는 검사 생략. */
+        return 1;
+    }
 
-    memset(&star_columns, 0, sizeof(star_columns));
-    star_columns.is_star = 1;
-
-    memset(&where_clause, 0, sizeof(where_clause));
-    where_clause.condition_count = 1;
-    strncpy(where_clause.conditions[0].column_name,
-            schema->columns[pk_index].name,
-            sizeof(where_clause.conditions[0].column_name) - 1);
-    strncpy(where_clause.conditions[0].operator,
-            "=",
-            sizeof(where_clause.conditions[0].operator) - 1);
-    strncpy(where_clause.conditions[0].value,
-            row->data[pk_index],
-            sizeof(where_clause.conditions[0].value) - 1);
-
-    result = storage_select(schema->table_name, schema, &star_columns, &where_clause);
-    if (result == NULL) {
+    key_long = strtol(row->data[pk_index], &end_ptr, 10);
+    if (*end_ptr != '\0') {
+        fprintf(stderr,
+                "[ERROR] Executor: primary key '%s' is not a valid integer\n",
+                row->data[pk_index]);
         return 0;
     }
 
-    if (result->row_count > 0) {
+    tree = index_get_or_build(schema->table_name, schema);
+    if (tree == NULL) {
+        /* 인덱스를 못 만들면 예전 로직으로 폴백 */
+        ColumnList star_columns;
+        WhereClause where_clause;
+        ResultSet *result;
+        int is_unique;
+
+        memset(&star_columns, 0, sizeof(star_columns));
+        star_columns.is_star = 1;
+        memset(&where_clause, 0, sizeof(where_clause));
+        where_clause.condition_count = 1;
+        strncpy(where_clause.conditions[0].column_name,
+                schema->columns[pk_index].name,
+                sizeof(where_clause.conditions[0].column_name) - 1);
+        strncpy(where_clause.conditions[0].operator,
+                "=",
+                sizeof(where_clause.conditions[0].operator) - 1);
+        strncpy(where_clause.conditions[0].value,
+                row->data[pk_index],
+                sizeof(where_clause.conditions[0].value) - 1);
+        result = storage_select(schema->table_name,
+                                schema,
+                                &star_columns,
+                                &where_clause);
+        if (result == NULL) {
+            return 0;
+        }
+        is_unique = (result->row_count == 0);
+        free_result_set(result);
+        if (!is_unique) {
+            fprintf(stderr,
+                    "[ERROR] Executor: duplicate primary key for column '%s'\n",
+                    schema->columns[pk_index].name);
+        }
+        return is_unique;
+    }
+
+    if (btree_find(tree, (int32_t)key_long, &dummy_offset)) {
         fprintf(stderr,
                 "[ERROR] Executor: duplicate primary key for column '%s'\n",
                 schema->columns[pk_index].name);
-        free_result_set(result);
         return 0;
     }
+    return 1;
+}
 
-    free_result_set(result);
+/* INSERT 시 사용자가 PK 를 지정하지 않았으면 (btree_max_key + 1) 로 자동 부여.
+ * 호출 측은 pk_index 가 INT 이고 값이 비어있음을 이미 확인한 상태여야 한다. */
+static int auto_assign_pk(Schema *schema, Row *row, int pk_index) {
+    BTree *tree;
+    int32_t next_id;
+
+    tree = index_get_or_build(schema->table_name, schema);
+    if (tree == NULL) {
+        fprintf(stderr,
+                "[ERROR] Executor: cannot build index for auto-increment on '%s'\n",
+                schema->table_name);
+        return 0;
+    }
+    next_id = btree_max_key(tree) + 1;
+    snprintf(row->data[pk_index], MAX_TOKEN_LEN, "%d", next_id);
     return 1;
 }
 
@@ -313,28 +364,48 @@ static int build_insert_row(Statement *stmt, Schema *schema, Row *row) {
         provided_indices[schema_index] = index;
     }
 
-    /* 저장 직전에는 반드시 스키마 순서로 행을 재구성한다. */
-    for (index = 0; index < schema->column_count; ++index) {
-        int value_index = provided_indices[index];
+    /* 저장 직전에는 반드시 스키마 순서로 행을 재구성한다.
+     * PK(INT)가 미지정이면 자동증가로 채우고, 사용자 지정이면 그대로 쓴다. */
+    {
+        int pk_index = find_primary_key_index(schema);
 
-        if (value_index == -1) {
-            if (!schema->columns[index].nullable) {
-                fprintf(stderr,
-                        "[ERROR] Executor: missing value for non-nullable column '%s'\n",
-                        schema->columns[index].name);
+        for (index = 0; index < schema->column_count; ++index) {
+            int value_index = provided_indices[index];
+
+            if (value_index == -1) {
+                /* PK INT 컬럼이 비어있다 → 자동증가로 채울 예정. 빈칸으로 둔다. */
+                if (index == pk_index && schema->columns[index].type == COL_INT) {
+                    row->data[index][0] = '\0';
+                    continue;
+                }
+                if (!schema->columns[index].nullable) {
+                    fprintf(stderr,
+                            "[ERROR] Executor: missing value for non-nullable column '%s'\n",
+                            schema->columns[index].name);
+                    return 0;
+                }
+                row->data[index][0] = '\0';
+                continue;
+            }
+
+            if (stmt->value_is_null[value_index]) {
+                row->data[index][0] = '\0';
+                continue;
+            }
+
+            strncpy(row->data[index], stmt->values[value_index], MAX_TOKEN_LEN - 1);
+            row->data[index][MAX_TOKEN_LEN - 1] = '\0';
+        }
+
+        if (pk_index >= 0 &&
+            schema->columns[pk_index].type == COL_INT &&
+            row->data[pk_index][0] == '\0') {
+            if (!auto_assign_pk(schema, row, pk_index)) {
                 return 0;
             }
-            row->data[index][0] = '\0';
-            continue;
+            /* 자동증가는 항상 (max+1)이라 중복 검사 생략. */
+            return 1;
         }
-
-        if (stmt->value_is_null[value_index]) {
-            row->data[index][0] = '\0';
-            continue;
-        }
-
-        strncpy(row->data[index], stmt->values[value_index], MAX_TOKEN_LEN - 1);
-        row->data[index][MAX_TOKEN_LEN - 1] = '\0';
     }
 
     return ensure_primary_key_is_unique(schema, row);
@@ -412,6 +483,8 @@ int execute_insert(Statement *stmt) {
     Schema *schema;
     Row row;
     int status;
+    int64_t row_offset = -1;
+    int pk_index;
 
     schema = schema_load(stmt->table_name);
     if (schema == NULL) {
@@ -423,15 +496,115 @@ int execute_insert(Statement *stmt) {
         return -1;
     }
 
-    status = storage_insert(stmt->table_name, &row, schema);
-    schema_free(schema);
-
+    status = storage_insert(stmt->table_name, &row, schema, &row_offset);
     if (status != 0) {
+        schema_free(schema);
         return -1;
     }
 
+    /* 저장이 성공했으니 인덱스에도 등록 (INT PK 에 한해). */
+    pk_index = find_primary_key_index(schema);
+    if (pk_index >= 0 && schema->columns[pk_index].type == COL_INT) {
+        BTree *tree = index_get_or_build(stmt->table_name, schema);
+        if (tree != NULL) {
+            long key_long;
+            char *end_ptr;
+            key_long = strtol(row.data[pk_index], &end_ptr, 10);
+            if (*end_ptr == '\0') {
+                (void)btree_insert(tree, (int32_t)key_long, row_offset);
+            }
+        }
+    }
+
+    schema_free(schema);
     puts("1 row inserted.");
     return 0;
+}
+
+static ResultSet *build_projected_result(Schema *schema, ColumnList *columns) {
+    ResultSet *result;
+    int i;
+
+    result = (ResultSet *)calloc(1, sizeof(ResultSet));
+    if (result == NULL) {
+        return NULL;
+    }
+    result->schema = schema;
+    if (columns == NULL || columns->is_star) {
+        result->selected_count = schema->column_count;
+        for (i = 0; i < schema->column_count; ++i) {
+            result->selected_indexes[i] = i;
+        }
+    } else {
+        result->selected_count = columns->count;
+        for (i = 0; i < columns->count; ++i) {
+            int idx = schema_get_column_index(schema, columns->names[i]);
+            if (idx < 0) {
+                free_result_set(result);
+                return NULL;
+            }
+            result->selected_indexes[i] = idx;
+        }
+    }
+    return result;
+}
+
+/* WHERE 절이 "PK = 상수" 단일 동등 조건일 때 B+ 트리로 즉시 해석한다.
+ * - 리턴 1: 인덱스 경로 사용, *out 에 ResultSet 설정
+ * - 리턴 0: 적용 불가 (호출자가 storage_select 로 폴백)
+ * - 리턴 -1: 오류 */
+static int try_index_select(Statement *stmt, Schema *schema, ResultSet **out) {
+    int pk_index;
+    int32_t key;
+    long key_long;
+    char *end_ptr;
+    int64_t offset;
+    BTree *tree;
+    ResultSet *result;
+
+    if (stmt->where.condition_count != 1) {
+        return 0;
+    }
+    if (strcmp(stmt->where.conditions[0].operator, "=") != 0) {
+        return 0;
+    }
+    pk_index = find_primary_key_index(schema);
+    if (pk_index < 0 || schema->columns[pk_index].type != COL_INT) {
+        return 0;
+    }
+    if (strcmp(stmt->where.conditions[0].column_name,
+               schema->columns[pk_index].name) != 0) {
+        return 0;
+    }
+
+    key_long = strtol(stmt->where.conditions[0].value, &end_ptr, 10);
+    if (*end_ptr != '\0') {
+        return 0;
+    }
+    key = (int32_t)key_long;
+
+    tree = index_get_or_build(stmt->table_name, schema);
+    if (tree == NULL) {
+        return 0;
+    }
+
+    result = build_projected_result(schema, &stmt->select_columns);
+    if (result == NULL) {
+        return -1;
+    }
+
+    if (btree_find(tree, key, &offset)) {
+        Row row;
+        if (!storage_read_row_at(stmt->table_name, schema, offset, &row)) {
+            free_result_set(result);
+            return -1;
+        }
+        result->rows[0] = row;
+        result->row_count = 1;
+    }
+
+    *out = result;
+    return 1;
 }
 
 int execute_select(Statement *stmt) {
@@ -439,6 +612,7 @@ int execute_select(Statement *stmt) {
     ResultSet *result;
     int index;
     int order_column_index = -1;
+    int idx_rc;
 
     schema = schema_load(stmt->table_name);
     if (schema == NULL) {
@@ -468,7 +642,15 @@ int execute_select(Statement *stmt) {
         }
     }
 
-    result = storage_select(stmt->table_name, schema, &stmt->select_columns, &stmt->where);
+    result = NULL;
+    idx_rc = try_index_select(stmt, schema, &result);
+    if (idx_rc < 0) {
+        schema_free(schema);
+        return -1;
+    }
+    if (idx_rc == 0) {
+        result = storage_select(stmt->table_name, schema, &stmt->select_columns, &stmt->where);
+    }
     if (result == NULL) {
         schema_free(schema);
         return -1;

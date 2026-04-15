@@ -1,21 +1,155 @@
+#include "btree.h"
 #include "config.h"
 #include "executor.h"
+#include "index.h"
 #include "lexer.h"
 #include "parser.h"
+#include "schema.h"
+#include "storage.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static void print_help(void) {
     puts("Usage: ./sqlengine [-f file | -e sql] [-d data_dir] [-s schema_dir]");
-    puts("  -f <file>     Execute SQL statements from file");
-    puts("  -e <sql>      Execute SQL statements from string");
-    puts("  -d <dir>      Set data directory (default: ./data)");
-    puts("  -s <dir>      Set schema directory (default: ./schemas)");
-    puts("  --help        Show this help message");
-    puts("  --version     Show version");
+    puts("  -f <file>           Execute SQL statements from file");
+    puts("  -e <sql>            Execute SQL statements from string");
+    puts("  -d <dir>            Set data directory (default: ./data)");
+    puts("  -s <dir>            Set schema directory (default: ./schemas)");
+    puts("  --bench <table>     Compare indexed vs linear SELECT");
+    puts("  --runs <n>          Repetitions for --bench (default 5)");
+    puts("  --help              Show this help message");
+    puts("  --version           Show version");
+}
+
+static double timespec_diff_usec(struct timespec start, struct timespec end) {
+    double sec = (double)(end.tv_sec - start.tv_sec);
+    double nsec = (double)(end.tv_nsec - start.tv_nsec);
+    return sec * 1e6 + nsec / 1e3;
+}
+
+/* 인덱스 경로 vs 선형 스캔 경로를 같은 크기의 테이블에서 벤치마크한다.
+ * - 인덱스 경로: btree_find + storage_read_row_at  (O(log n) + 1 seek)
+ * - 선형 경로:   storage_select with WHERE name = ?  (O(n) 풀 스캔)
+ * 두 쿼리 모두 "id=K 인 행" 을 가리키도록 key 와 name 을 동기화한다. */
+static int run_benchmark(const char *table_name, int runs) {
+    Schema *schema;
+    BTree *tree;
+    int32_t max_key;
+    int32_t target_key;
+    char name_buf[64];
+    struct timespec t0;
+    struct timespec t1;
+    double total_index = 0.0;
+    double total_linear = 0.0;
+    int i;
+    int pk_index;
+
+    schema = schema_load(table_name);
+    if (schema == NULL) {
+        fprintf(stderr, "[BENCH] failed to load schema '%s'\n", table_name);
+        return 1;
+    }
+    pk_index = -1;
+    for (i = 0; i < schema->column_count; ++i) {
+        if (schema->columns[i].is_primary_key) {
+            pk_index = i;
+            break;
+        }
+    }
+    if (pk_index < 0 || schema->columns[pk_index].type != COL_INT) {
+        fprintf(stderr, "[BENCH] table '%s' has no INT primary key\n", table_name);
+        schema_free(schema);
+        return 1;
+    }
+
+    /* 인덱스 구축 시간도 한번 측정한다 (최초 쿼리의 lazy build 비용). */
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    tree = index_get_or_build(table_name, schema);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    if (tree == NULL) {
+        fprintf(stderr, "[BENCH] failed to build index\n");
+        schema_free(schema);
+        return 1;
+    }
+    printf("[BENCH] table=%s rows=%zu build=%.1f us\n",
+           table_name,
+           btree_size(tree),
+           timespec_diff_usec(t0, t1));
+
+    max_key = btree_max_key(tree);
+    if (max_key <= 0) {
+        fprintf(stderr, "[BENCH] table is empty\n");
+        schema_free(schema);
+        return 1;
+    }
+    /* 범위 한가운데 키를 고정 타겟으로 사용. */
+    target_key = max_key / 2;
+    if (target_key <= 0) {
+        target_key = 1;
+    }
+    snprintf(name_buf, sizeof(name_buf), "name_%07d", (int)target_key);
+
+    printf("[BENCH] target id=%d name='%s' runs=%d\n",
+           (int)target_key,
+           name_buf,
+           runs);
+
+    for (i = 0; i < runs; ++i) {
+        int64_t offset = -1;
+        Row row;
+
+        /* 인덱스 경로 */
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        if (btree_find(tree, target_key, &offset)) {
+            storage_read_row_at(table_name, schema, offset, &row);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        total_index += timespec_diff_usec(t0, t1);
+
+        /* 선형 경로: storage_select 를 직접 호출하여 print 오버헤드 제거 */
+        {
+            ColumnList star;
+            WhereClause where;
+            ResultSet *result;
+
+            memset(&star, 0, sizeof(star));
+            star.is_star = 1;
+            memset(&where, 0, sizeof(where));
+            where.condition_count = 1;
+            strncpy(where.conditions[0].column_name, "name",
+                    sizeof(where.conditions[0].column_name) - 1);
+            strncpy(where.conditions[0].operator, "=",
+                    sizeof(where.conditions[0].operator) - 1);
+            strncpy(where.conditions[0].value, name_buf,
+                    sizeof(where.conditions[0].value) - 1);
+
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            result = storage_select(table_name, schema, &star, &where);
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            if (result != NULL) {
+                free_result_set(result);
+            }
+            total_linear += timespec_diff_usec(t0, t1);
+        }
+    }
+
+    {
+        double avg_index = total_index / runs;
+        double avg_linear = total_linear / runs;
+        double speedup = (avg_index > 0.0) ? (avg_linear / avg_index) : 0.0;
+        printf("[BENCH] indexed avg: %10.2f us\n", avg_index);
+        printf("[BENCH] linear  avg: %10.2f us\n", avg_linear);
+        printf("[BENCH] speedup    : %10.2fx\n", speedup);
+    }
+
+    schema_free(schema);
+    index_drop_all();
+    return 0;
 }
 
 static char *read_file_contents(const char *path) {
@@ -171,11 +305,28 @@ static int run_sql_script(const char *script) {
 int main(int argc, char **argv) {
     const char *file_input = NULL;
     const char *sql_input = NULL;
+    const char *bench_table = NULL;
+    int bench_runs = 5;
     char *script = NULL;
     int index;
 
     for (index = 1; index < argc; ++index) {
-        if (strcmp(argv[index], "-f") == 0) {
+        if (strcmp(argv[index], "--bench") == 0) {
+            if (index + 1 >= argc) {
+                fprintf(stderr, "[ERROR] CLI: missing table after --bench\n");
+                return 3;
+            }
+            bench_table = argv[++index];
+        } else if (strcmp(argv[index], "--runs") == 0) {
+            if (index + 1 >= argc) {
+                fprintf(stderr, "[ERROR] CLI: missing number after --runs\n");
+                return 3;
+            }
+            bench_runs = atoi(argv[++index]);
+            if (bench_runs <= 0) {
+                bench_runs = 1;
+            }
+        } else if (strcmp(argv[index], "-f") == 0) {
             if (index + 1 >= argc) {
                 fprintf(stderr, "[ERROR] CLI: missing file path after -f\n");
                 return 3;
@@ -209,6 +360,10 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[ERROR] CLI: unknown option '%s'\n", argv[index]);
             return 3;
         }
+    }
+
+    if (bench_table != NULL) {
+        return run_benchmark(bench_table, bench_runs);
     }
 
     if (file_input != NULL && sql_input != NULL) {
