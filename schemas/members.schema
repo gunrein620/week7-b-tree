@@ -1,0 +1,6 @@
+# column_name,type,max_length,nullable,primary_key
+id,INT,0,0,1
+name,VARCHAR,32,0,0
+grade,VARCHAR,16,1,0
+class,VARCHAR,16,1,0
+age,INT,0,1,0
