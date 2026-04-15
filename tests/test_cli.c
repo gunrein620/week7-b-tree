@@ -264,6 +264,160 @@ static int test_cli_order_by_desc_output(void) {
     return 1;
 }
 
+static int test_cli_bench_bulk_output(void) {
+    char workspace[PATH_MAX];
+    char schema_dir[PATH_MAX];
+    char data_dir[PATH_MAX];
+    char tbl_path[PATH_MAX];
+    char out_path[PATH_MAX];
+    char err_path[PATH_MAX];
+    char command[4096];
+    char *stdout_text;
+    FILE *file;
+    int exit_code;
+    int row_id;
+
+    if (!th_setup_workspace("cli_bench_bulk", workspace, sizeof(workspace))) {
+        return th_fail("failed to create temporary workspace");
+    }
+
+    th_join_path(schema_dir, sizeof(schema_dir), workspace, "schemas");
+    th_join_path(data_dir, sizeof(data_dir), workspace, "data");
+    th_join_path(tbl_path, sizeof(tbl_path), data_dir, "members.tbl");
+    th_join_path(out_path, sizeof(out_path), workspace, "stdout.txt");
+    th_join_path(err_path, sizeof(err_path), workspace, "stderr.txt");
+
+    if (!th_write_members_schema(schema_dir)) {
+        th_remove_tree(workspace);
+        return th_fail("failed to write members schema");
+    }
+
+    file = fopen(tbl_path, "w");
+    if (file == NULL) {
+        th_remove_tree(workspace);
+        return th_fail("failed to open members.tbl");
+    }
+
+    fputs("id|name|grade|class|age\n", file);
+    for (row_id = 1; row_id <= 20; ++row_id) {
+        fprintf(file,
+                "%d|name_%04d|vip|basic|%d\n",
+                row_id,
+                row_id,
+                20 + row_id);
+    }
+    fclose(file);
+
+    snprintf(command,
+             sizeof(command),
+             "%s -s \"%s\" -d \"%s\" --bench members --runs 1 --bulk-rows 10 > \"%s\" 2> \"%s\"",
+             TEST_SQLENGINE_COMMAND,
+             schema_dir,
+             data_dir,
+             out_path,
+             err_path);
+
+    exit_code = exit_code_from_system(system(command));
+    stdout_text = th_read_text_file(out_path);
+    th_remove_tree(workspace);
+
+    if (exit_code != 0) {
+        free(stdout_text);
+        return th_fail("CLI bulk benchmark should exit with 0");
+    }
+    if (stdout_text == NULL) {
+        return th_fail("failed to read bulk benchmark output");
+    }
+    if (!th_string_contains(stdout_text, "bulk target rows=10") ||
+        !th_string_contains(stdout_text, "share=50.00%") ||
+        !th_string_contains(stdout_text, "bulk fetch core (avg over repeated runs)") ||
+        !th_string_contains(stdout_text, "[BENCH]   faster") ||
+        th_string_contains(stdout_text, "cold e2e (1 run, lazy build included)") ||
+        th_string_contains(stdout_text, "warm core (avg over repeated runs)")) {
+        free(stdout_text);
+        return th_fail("bulk benchmark output missing expected summary");
+    }
+
+    free(stdout_text);
+    return 1;
+}
+
+static int test_cli_bench_bulk_sweep_output(void) {
+    char workspace[PATH_MAX];
+    char schema_dir[PATH_MAX];
+    char data_dir[PATH_MAX];
+    char tbl_path[PATH_MAX];
+    char out_path[PATH_MAX];
+    char err_path[PATH_MAX];
+    char command[4096];
+    char *stdout_text;
+    FILE *file;
+    int exit_code;
+    int row_id;
+
+    if (!th_setup_workspace("cli_bench_sweep", workspace, sizeof(workspace))) {
+        return th_fail("failed to create temporary workspace");
+    }
+
+    th_join_path(schema_dir, sizeof(schema_dir), workspace, "schemas");
+    th_join_path(data_dir, sizeof(data_dir), workspace, "data");
+    th_join_path(tbl_path, sizeof(tbl_path), data_dir, "members.tbl");
+    th_join_path(out_path, sizeof(out_path), workspace, "stdout.txt");
+    th_join_path(err_path, sizeof(err_path), workspace, "stderr.txt");
+
+    if (!th_write_members_schema(schema_dir)) {
+        th_remove_tree(workspace);
+        return th_fail("failed to write members schema");
+    }
+
+    file = fopen(tbl_path, "w");
+    if (file == NULL) {
+        th_remove_tree(workspace);
+        return th_fail("failed to open members.tbl");
+    }
+
+    fputs("id|name|grade|class|age\n", file);
+    for (row_id = 1; row_id <= 20; ++row_id) {
+        fprintf(file,
+                "%d|name_%04d|vip|basic|%d\n",
+                row_id,
+                row_id,
+                20 + row_id);
+    }
+    fclose(file);
+
+    snprintf(command,
+             sizeof(command),
+             "%s -s \"%s\" -d \"%s\" --bench members --runs 1 --bulk-sweep > \"%s\" 2> \"%s\"",
+             TEST_SQLENGINE_COMMAND,
+             schema_dir,
+             data_dir,
+             out_path,
+             err_path);
+
+    exit_code = exit_code_from_system(system(command));
+    stdout_text = th_read_text_file(out_path);
+    th_remove_tree(workspace);
+
+    if (exit_code != 0) {
+        free(stdout_text);
+        return th_fail("CLI bulk sweep benchmark should exit with 0");
+    }
+    if (stdout_text == NULL) {
+        return th_fail("failed to read bulk sweep output");
+    }
+    if (!th_string_contains(stdout_text, "bulk sweep (avg over repeated runs") ||
+        !th_string_contains(stdout_text, "rows=20") ||
+        !th_string_contains(stdout_text, "share=100.00%") ||
+        th_string_contains(stdout_text, "cold e2e (1 run, lazy build included)")) {
+        free(stdout_text);
+        return th_fail("bulk sweep output missing expected summary");
+    }
+
+    free(stdout_text);
+    return 1;
+}
+
 int main(void) {
     int passed = 0;
     int failed = 0;
@@ -302,6 +456,24 @@ int main(void) {
     } else {
         failed++;
         th_print_result("cli_order_by_desc_output", 0);
+    }
+
+    th_reset_reason();
+    if (test_cli_bench_bulk_output()) {
+        passed++;
+        th_print_result("cli_bench_bulk_output", 1);
+    } else {
+        failed++;
+        th_print_result("cli_bench_bulk_output", 0);
+    }
+
+    th_reset_reason();
+    if (test_cli_bench_bulk_sweep_output()) {
+        passed++;
+        th_print_result("cli_bench_bulk_sweep_output", 1);
+    } else {
+        failed++;
+        th_print_result("cli_bench_bulk_sweep_output", 0);
     }
 
     printf("Tests: %d passed, %d failed\n", passed, failed);

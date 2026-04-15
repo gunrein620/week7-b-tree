@@ -26,7 +26,7 @@ Windows에서는 대응하는 `*.exe` 산출물을 직접 사용한다.
 
 ```
 ./sqlengine [-f file | -e sql] [-d data_dir] [-s schema_dir]
-            [--bench <table> [--runs <n>]]
+            [--bench <table> [--runs <n>] [--bulk-rows <n> | --bulk-pct <p>] [--bulk-sweep]]
             [--help | --version]
 ```
 
@@ -38,6 +38,9 @@ Windows에서는 대응하는 `*.exe` 산출물을 직접 사용한다.
 | `-s <dir>`  | 스키마 디렉터리 (기본 `./schemas`) |
 | `--bench <table>` | 해당 테이블에서 인덱스/선형 SELECT 벤치 |
 | `--runs <n>` | `--bench` 반복 횟수 (기본 5) |
+| `--bulk-rows <n>` | `--bench` 아래에 앞쪽 `n`개 행 bulk fetch 비교 추가 |
+| `--bulk-pct <p>` | `--bench` 아래에 앞쪽 `p%` 행 bulk fetch 비교 추가 |
+| `--bulk-sweep` | 여러 bulk 크기를 한 번에 비교하고 crossover 구간 요약 |
 
 스키마는 `schemas/members.schema` 가 기본으로 제공된다:
 
@@ -104,6 +107,43 @@ make run-f SQL=sql/members_demo.sql
 
 ```bash
 ./sqlengine --bench members --runs 5
+./sqlengine --bench members --runs 5 --bulk-pct 50
+./sqlengine --bench members --runs 5 --bulk-rows 20000
+./sqlengine --bench members --runs 5 --bulk-sweep
+```
+
+### 5.1 자주 쓰는 벤치 명령
+
+`point lookup` 과 `bulk fetch` 가 각각 어떻게 다른지 보려면 아래 3개를 많이 쓴다.
+
+`1)` 여러 크기를 자동으로 훑어보는 전체 비교
+
+이 명령은 작은 구간부터 큰 구간까지 자동으로 측정한다.  
+어느 지점까지는 `indexed` 가 빠르고, 어느 지점부터는 `linear` 가 더 빨라지는지 한 번에 확인할 수 있다.  
+마지막에 `crossover between ...` 또는 `linear first wins at ...` 같은 요약도 함께 나온다.
+
+```bash
+./sqlengine --bench members --runs 5 --bulk-sweep
+```
+
+`2)` 전체의 50%를 읽는 bulk fetch 비교
+
+이 명령은 테이블 가운데 구간의 절반을 읽어서 비교한다.  
+`1건 찾기`가 아니라 `많이 읽기` 상황을 보여주기 때문에, 보통은 선형 스캔이 따라잡거나 더 빨라지는 모습을 보기 좋다.  
+예를 들어 “전체의 절반 정도를 출력하거나 읽어야 하면 인덱스가 꼭 이득인가?”를 확인할 때 적합하다.
+
+```bash
+./sqlengine --bench members --runs 5 --bulk-pct 50
+```
+
+`3)` 정확히 20000행을 읽는 bulk fetch 비교
+
+이 명령은 퍼센트가 아니라 행 수를 직접 지정한다.  
+테이블이 20000행이면 사실상 전체를 다 읽는 테스트가 되고, 100만 행이면 그중 20000행만 읽는 테스트가 된다.  
+즉 같은 명령으로도 데이터 크기에 따라 다른 상황을 만들 수 있어서, “딱 N개 읽을 때”의 성능을 비교하기 좋다.
+
+```bash
+./sqlengine --bench members --runs 5 --bulk-rows 20000
 ```
 
 출력 예 (1,000,000 행 기준):
@@ -116,18 +156,27 @@ make run-f SQL=sql/members_demo.sql
 [BENCH] cold e2e (1 run, lazy build included)
 [BENCH]   indexed [###.................................]    1.15 ms
 [BENCH]   linear  [####################################]  145.97 ms
-[BENCH]   speedup     126.93x
+[BENCH]   faster  indexed     126.93x
 [BENCH] warm core (avg over repeated runs)
 [BENCH]   indexed [#...................................]   49.00 us
 [BENCH]   linear  [####################################]  145.97 ms
-[BENCH]   speedup    2978.89x
+[BENCH]   faster  indexed    2978.89x
+[BENCH] bulk target rows=500000 share=50.00% start_pk=250000 mode=center_window_pk_asc
+[BENCH] bulk fetch core (avg over repeated runs)
+[BENCH]   indexed [####################################]  214.37 ms
+[BENCH]   linear  [##############################......]  181.42 ms
+[BENCH]   faster  linear        1.18x
 ```
 
 - **build only**: `.tbl` 스캔 후 B+ 트리 구축 시간 (lazy build 1회 비용)
 - **cold e2e**: lexer/parser/executor까지 포함한 첫 indexed SELECT 전체 시간
 - **warm e2e**: 인덱스가 이미 메모리에 올라온 뒤의 전체 SQL 실행 평균 시간
 - **cold/warm core**: `btree_find` 와 `storage_select` 핵심 경로만 직접 측정한 시간
-- **speedup**: `linear / indexed`
+- **faster**: 더 빠른 쪽과 배수. point lookup 에서는 대체로 indexed, bulk fetch 에서는 linear 가 이길 수도 있다.
+- `--bulk-rows`, `--bulk-pct` 는 콘솔 출력 대신 실제 행 읽기 비용만 비교한다. 수십만 행을 그대로 출력하면 stdout 비용이 커져 엔진 차이를 흐릴 수 있다.
+- `--bulk-rows`, `--bulk-pct`, `--bulk-sweep` 를 쓰면 기존 1건 조회 벤치 섹션은 숨기고, bulk 관련 결과만 출력한다.
+- bulk 비교는 테이블 한가운데 구간을 기준으로 잡는다. 작은 구간은 인덱스가 유리하고, 구간이 커질수록 선형 스캔이 따라잡는 모습을 보기 쉽다.
+- `--bulk-sweep` 는 `1, 10, 100, 1000, 5000, 10000, 20000, ... , total_rows` 식으로 여러 크기를 자동 비교해서, 어느 지점부터 linear 가 이기기 시작하는지 힌트를 준다.
 
 `--runs` 를 올리면 노이즈가 줄고, 낮추면 빠르게 확인 가능.
 
@@ -183,13 +232,15 @@ make && make tools
 
 # 3) 벤치 실행
 ./sqlengine --bench members --runs 5
+./sqlengine --bench members --runs 5 --bulk-pct 50
+./sqlengine --bench members --runs 5 --bulk-sweep
 
 # 4) REPL 체감 비교
 ./sqlengine -e "SELECT * FROM members WHERE id = 777777;"       # 즉시
 ./sqlengine -e "SELECT * FROM members WHERE name = 'name_0777777';"  # 체감되는 지연
 ```
 
-기대: 인덱스 경로 수십 μs, 선형 경로 100ms 이상, **2000~3000x speedup**.
+기대: point lookup 은 인덱스가 압도적으로 빠르고, `--bulk-pct 50` 같은 bulk fetch 는 선형 스캔이 더 빠를 수도 있다.
 
 ### 7.2 "Auto-increment + 중복 차단" (INSERT 경로 데모)
 

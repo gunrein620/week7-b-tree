@@ -281,3 +281,73 @@ int32_t btree_max_key(BTree *tree) {
 size_t btree_size(BTree *tree) {
     return tree ? tree->size : 0;
 }
+
+size_t btree_visit_first_n(BTree *tree, size_t limit, BTreeVisitFn visitor, void *context) {
+    BTreeNode *leaf;
+    size_t visited = 0;
+
+    if (tree == NULL || tree->root == NULL || visitor == NULL || limit == 0) {
+        return 0;
+    }
+
+    leaf = tree->root;
+    while (leaf != NULL && !leaf->is_leaf) {
+        leaf = leaf->children[0];
+    }
+
+    while (leaf != NULL && visited < limit) {
+        int index;
+
+        for (index = 0; index < leaf->num_keys && visited < limit; ++index) {
+            if (!visitor(leaf->keys[index], leaf->values[index], context)) {
+                return visited;
+            }
+            visited++;
+        }
+        leaf = leaf->next;
+    }
+
+    return visited;
+}
+
+size_t btree_visit_from(BTree *tree,
+                        int32_t start_key,
+                        size_t limit,
+                        BTreeVisitFn visitor,
+                        void *context) {
+    BTreeNode *leaf;
+    size_t visited = 0;
+    int pos;
+
+    if (tree == NULL || tree->root == NULL || visitor == NULL || limit == 0) {
+        return 0;
+    }
+
+    leaf = tree->root;
+    while (leaf != NULL && !leaf->is_leaf) {
+        int child_idx = node_lower_bound(leaf, start_key);
+        if (child_idx < leaf->num_keys && leaf->keys[child_idx] == start_key) {
+            child_idx++;
+        }
+        leaf = leaf->children[child_idx];
+    }
+
+    if (leaf == NULL) {
+        return 0;
+    }
+
+    pos = node_lower_bound(leaf, start_key);
+    while (leaf != NULL && visited < limit) {
+        while (pos < leaf->num_keys && visited < limit) {
+            if (!visitor(leaf->keys[pos], leaf->values[pos], context)) {
+                return visited;
+            }
+            visited++;
+            pos++;
+        }
+        leaf = leaf->next;
+        pos = 0;
+    }
+
+    return visited;
+}

@@ -6,6 +6,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+typedef struct {
+    int expected_next_key;
+    int ok;
+} VisitContext;
+
+static int visit_first_n_keys(int32_t key, int64_t value, void *context) {
+    VisitContext *ctx = (VisitContext *)context;
+
+    if (ctx == NULL) {
+        return 0;
+    }
+    if (key != ctx->expected_next_key || value != (int64_t)(key * 10)) {
+        ctx->ok = 0;
+        return 0;
+    }
+
+    ctx->expected_next_key++;
+    return 1;
+}
+
 static int test_empty_tree(void) {
     BTree *t = btree_create();
     int64_t v = -1;
@@ -165,6 +185,74 @@ static int test_split_boundaries(void) {
     return ok;
 }
 
+static int test_visit_first_n(void) {
+    BTree *t = btree_create();
+    VisitContext context;
+    size_t visited;
+    int ok = 1;
+    int i;
+
+    if (t == NULL) {
+        return th_fail("create returned NULL");
+    }
+
+    for (i = 1; i <= 200; ++i) {
+        if (btree_insert(t, (int32_t)i, (int64_t)(i * 10)) != 0) {
+            ok = th_fail("visit insert");
+            break;
+        }
+    }
+
+    if (ok) {
+        context.expected_next_key = 1;
+        context.ok = 1;
+        visited = btree_visit_first_n(t, 25, visit_first_n_keys, &context);
+        if (visited != 25) {
+            ok = th_fail("visit count");
+        } else if (!context.ok || context.expected_next_key != 26) {
+            ok = th_fail("visit order");
+        }
+    }
+
+    btree_free(t);
+    th_print_result("visit_first_n", ok);
+    return ok;
+}
+
+static int test_visit_from_key(void) {
+    BTree *t = btree_create();
+    VisitContext context;
+    size_t visited;
+    int ok = 1;
+    int i;
+
+    if (t == NULL) {
+        return th_fail("create returned NULL");
+    }
+
+    for (i = 1; i <= 200; ++i) {
+        if (btree_insert(t, (int32_t)i, (int64_t)(i * 10)) != 0) {
+            ok = th_fail("visit_from insert");
+            break;
+        }
+    }
+
+    if (ok) {
+        context.expected_next_key = 50;
+        context.ok = 1;
+        visited = btree_visit_from(t, 50, 12, visit_first_n_keys, &context);
+        if (visited != 12) {
+            ok = th_fail("visit_from count");
+        } else if (!context.ok || context.expected_next_key != 62) {
+            ok = th_fail("visit_from order");
+        }
+    }
+
+    btree_free(t);
+    th_print_result("visit_from_key", ok);
+    return ok;
+}
+
 int main(void) {
     int passed = 0;
     int failed = 0;
@@ -176,6 +264,8 @@ int main(void) {
     th_reset_reason(); if (test_reverse_insert()) passed++; else failed++;
     th_reset_reason(); if (test_random_like()) passed++; else failed++;
     th_reset_reason(); if (test_split_boundaries()) passed++; else failed++;
+    th_reset_reason(); if (test_visit_first_n()) passed++; else failed++;
+    th_reset_reason(); if (test_visit_from_key()) passed++; else failed++;
 
     printf("Tests: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;

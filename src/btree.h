@@ -10,6 +10,7 @@
  */
 
 typedef struct BTree BTree;
+typedef int (*BTreeVisitFn)(int32_t key, int64_t offset, void *context);
 
 BTree  *btree_create(void);
 void    btree_free(BTree *tree);
@@ -24,5 +25,11 @@ int     btree_find(BTree *tree, int32_t key, int64_t *out_offset);
 int32_t btree_max_key(BTree *tree);
 
 size_t  btree_size(BTree *tree);
+size_t  btree_visit_first_n(BTree *tree, size_t limit, BTreeVisitFn visitor, void *context);
+size_t  btree_visit_from(BTree *tree,
+                         int32_t start_key,
+                         size_t limit,
+                         BTreeVisitFn visitor,
+                         void *context);
 
 #endif
