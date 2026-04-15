@@ -173,8 +173,8 @@ make && make tools
 ./sqlengine --bench members --runs 5
 
 # 4) REPL 체감 비교
-./sqlengine -e "SELECT * FROM members WHERE id = 777777;"       # 즉시
-./sqlengine -e "SELECT * FROM members WHERE name = 'name_0777777';"  # 체감되는 지연
+./sqlengine -e "SELECT * FROM members WHERE id = 7777777;"       # 즉시
+./sqlengine -e "SELECT * FROM members WHERE name = 'name_7777777';"  # 체감되는 지연
 ```
 
 기대: 인덱스 경로 수십 μs, 선형 경로 100ms 이상, **2000~3000x speedup**.
@@ -270,3 +270,35 @@ rm -f data/members.tbl
 - **INT PK 전용**: 다른 타입 PK 는 인덱싱하지 않음
 - **단일 동등 WHERE 만 최적화**: `WHERE id = K` 한정. `BETWEEN`, `IN`, `>=` 등은 선형 스캔
 - **`ResultSet.rows[MAX_ROWS=10000]`**: 풀스캔 결과가 10000 을 넘으면 잘림. 단일 매치 벤치에서는 영향 없음
+
+## 11. 자주 쓰는 명령어
+
+### 11.1 100만 데이터 생성
+
+```bash
+./tools/gen_members 1000000
+```
+
+### 11.2 벤치마크 실행
+
+```bash
+./sqlengine --bench members --runs 5
+```
+
+### 11.3 `name` 값으로 선형 탐색
+
+```bash
+./sqlengine -e "SELECT * FROM members WHERE name = 'name_0777777';"
+```
+
+### 11.4 `id` 값으로 B+ 트리 탐색
+
+```bash
+./sqlengine -e "SELECT * FROM members WHERE id = 777777;"
+```
+
+### 11.5 두 경로를 한 번에 비교
+
+```bash
+time ./sqlengine -e "SELECT * FROM members WHERE id = 777777; SELECT * FROM members WHERE name = 'name_0777777';"
+```
