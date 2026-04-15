@@ -4,7 +4,9 @@
 > `WHERE id = ?` 조회를 O(N) 선형 탐색에서 O(log N) 인덱스 탐색으로 바꾸는 프로젝트.
 
 ---
-![image](./image/스크린샷 2026-04-16 시간_ 01.37.12.png)
+
+![종합벤치](./image/종합벤치.png)
+
 ---
 
 ## 왜 이 프로젝트를 만들었는지
@@ -120,7 +122,7 @@ make clean      # 빌드 아티팩트 정리
 
 ### 전체 처리 흐름
 
-![sqlengine 아키텍처](assets/sqlengine_architecture_v2.svg)
+![sqlengine 아키텍처](./image/image.png)
 
 ### 모듈 역할 요약
 
@@ -156,7 +158,7 @@ SELECT ... WHERE id = N
               └─► storage_read_row_at(offset) ← 해당 위치 단일 행만 읽기
 ```
 
-![image](./image/스크린샷 2026-04-16 시간_ 01.42.28.png)
+![선형-인덱스](./image/선형-인덱스.png)
 
 ---
 
@@ -212,7 +214,7 @@ week7-b-tree/
 - **단일 동등 WHERE만 최적화**: `WHERE id = K` 한정. `BETWEEN`, `>=` 등은 선형 스캔
 - **ResultSet 상한**: 풀스캔 결과가 10,000건을 넘으면 잘림 (단일 매치 조회에는 무관)
 
-![image](image/스크린샷%202026-04-16%20시간_%2001.43.04.png)
+![임계점](./image/임계점.png)
 
 ---
 
